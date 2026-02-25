@@ -127,13 +127,17 @@ class VerlGRPO(TrainingService):
         n_gpus = n_total - reserve_for_activations
         assert n_gpus >= 1, "No GPUs available for training!"
 
-        if n_gpus % 2 != 0:
+        if n_gpus > 1 and n_gpus % 2 != 0:
             warnings.warn("Odd number of GPUs detected, will remove 1 to preserve even number of GPUs for training")
             n_gpus -= 1
         
         print(f"n_gpus: {n_gpus} | activations_gpus: {reserve_for_activations}")
 
         full_batch_size = self.training_config.num_prompts * self.training_config.num_generations
+        # Ensure per_device_batch_size doesn't exceed total batch (mini batch must be >= micro batch)
+        if self.training_config.per_device_batch_size > full_batch_size:
+            self.print(f"Capping per_device_batch_size from {self.training_config.per_device_batch_size} to {full_batch_size}")
+            self.training_config.per_device_batch_size = full_batch_size
         self.print(f"Optimizer update batch size: {full_batch_size}")
 
         # Calculate checkpoint save contents based on save_only_model

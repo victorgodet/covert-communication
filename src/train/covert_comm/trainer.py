@@ -575,6 +575,17 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                         batch_b.batch[tensor_key], (0, max_len - len_b), value=0
                     )
 
+        # Align non_tensor_batch keys: both batches must have the same keys
+        # for DataProto.concat to work. Fill missing keys with empty arrays.
+        all_keys = set(batch_a.non_tensor_batch.keys()) | set(batch_b.non_tensor_batch.keys())
+        bsz_a = batch_a.batch["attention_mask"].shape[0]
+        bsz_b = batch_b.batch["attention_mask"].shape[0]
+        for key in all_keys:
+            if key not in batch_a.non_tensor_batch:
+                batch_a.non_tensor_batch[key] = np.array([""] * bsz_a, dtype=object)
+            if key not in batch_b.non_tensor_batch:
+                batch_b.non_tensor_batch[key] = np.array([""] * bsz_b, dtype=object)
+
         return DataProto.concat([batch_a, batch_b])
 
     def _log_covert_comm_rollout(
@@ -672,13 +683,10 @@ class CovertCommTaskRunner(TaskRunner):
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
-        # Reward fn still needed for validation
-        reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
-        )
-        val_reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
-        )
+        # Covert comm computes rewards directly in the trainer loop,
+        # so we don't need a reward manager. Pass None for both.
+        reward_fn = None
+        val_reward_fn = None
 
         resource_pool_manager = self.init_resource_pool_mgr(config)
 
