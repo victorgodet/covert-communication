@@ -183,7 +183,7 @@ class RewardHackingMonitor(Judge):
         )
 
         super().__init__(
-            model_name = kwargs.get("judge_model_id", "anthropic/claude-haiku-4.5"), 
+            model_name = kwargs.get("judge_model_id", "deepseek/deepseek-v3.2"), 
             judge_prompt = PROMPTS[prompt_key],
             output_type = output_type,
             generation_engine = "openrouter", # Set to None to auto-select engine

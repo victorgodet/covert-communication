@@ -14,7 +14,6 @@ from src.train.covert_comm.trainer import (
 )
 from src.train.covert_comm.dataset import generate_dataset, get_primes_by_level, sieve_primes
 from src.train.covert_comm.prompts import (
-    ENCODE_SYSTEM_PROMPT,
     make_decode_prompt,
     make_encode_prompt,
 )
@@ -28,7 +27,6 @@ __all__ = [
     "generate_dataset",
     "get_primes_by_level",
     "sieve_primes",
-    "ENCODE_SYSTEM_PROMPT",
     "make_decode_prompt",
     "make_encode_prompt",
 ]

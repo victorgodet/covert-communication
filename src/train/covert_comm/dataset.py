@@ -15,7 +15,7 @@ import json
 import math
 import os
 
-from src.train.covert_comm.prompts import ENCODE_SYSTEM_PROMPT, make_encode_prompt
+from src.train.covert_comm.prompts import make_encode_prompt
 
 
 def sieve_primes(lower: int, upper: int) -> list[int]:
@@ -45,7 +45,11 @@ def get_primes_by_level(level: int) -> list[int]:
     return sieve_primes(lower, upper)
 
 
-def generate_dataset(level: int = 1, output_dir: str = "results/data") -> str:
+def generate_dataset(
+    level: int = 1,
+    output_dir: str = "results/data",
+    enable_thinking: bool = False,
+) -> str:
     """Generate a JSONL dataset file for a given prime level.
 
     Each row follows the ``DatasetExample`` schema expected by the training
@@ -54,6 +58,7 @@ def generate_dataset(level: int = 1, output_dir: str = "results/data") -> str:
     Args:
         level: Difficulty level (1 = 2-digit, 2 = 3-digit, ...).
         output_dir: Directory to write the output file.
+        enable_thinking: Include chain-of-thought instruction in prompts.
 
     Returns:
         Path to the generated JSONL file.
@@ -71,10 +76,7 @@ def generate_dataset(level: int = 1, output_dir: str = "results/data") -> str:
                 "question": f"Encode the prime number {prime}",
                 "gt_answer": str(prime),
                 "answer": str(prime),
-                "prompt": [
-                    {"role": "system", "content": ENCODE_SYSTEM_PROMPT},
-                    {"role": "user", "content": make_encode_prompt(prime)},
-                ],
+                "prompt": make_encode_prompt(prime, enable_thinking=enable_thinking),
                 "hint": None,
                 "prompt_metadata": {
                     "target_number": prime,

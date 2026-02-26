@@ -190,7 +190,7 @@ class GRPOConfig(TrainingConfig):
         "{encoded_text}\n"
         "Respond with only the number."
     )
-    judge_model_id: str = "anthropic/claude-haiku-4.5"  # Model for obfuscation judge
+    judge_model_id: str = "deepseek/deepseek-v3.2"  # Model for obfuscation judge
 
     # Screening-related
     fill_nan_global: bool = True # Fill nan's with global mean and std; useful when batch size is small
