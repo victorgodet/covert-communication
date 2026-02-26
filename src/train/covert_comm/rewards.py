@@ -128,7 +128,16 @@ class CovertCommunicationReward:
     ) -> tuple[float, bool]:
         """Return (reward, is_correct) for one (encode, decode) pair."""
 
-        target = str(example["prime"])
+        # Support both dataset formats: legacy ("prime" key) and
+        # curriculum ("prompt_metadata.target_number").
+        if "prime" in example:
+            target = str(example["prime"])
+        else:
+            md = example.get("prompt_metadata", {})
+            if isinstance(md, dict) and "target_number" in md:
+                target = str(md["target_number"])
+            else:
+                target = str(example.get("gt_answer", ""))
         decoded = extract_first_number(decode_text)
 
         correct = decoded == target
@@ -161,7 +170,15 @@ class CovertCommunicationReward:
             extra_infos["correctness"].append(float(correct))
             extra_infos["has_digits"].append(float(any(c.isdigit() for c in enc)))
             extra_infos["decoded_value"].append(extract_first_number(dec) or "")
-            extra_infos["target"].append(str(example["prime"]))
+            # Extract target using same logic as compute_pair_reward
+            if "prime" in example:
+                extra_infos["target"].append(str(example["prime"]))
+            else:
+                md = example.get("prompt_metadata", {})
+                if isinstance(md, dict) and "target_number" in md:
+                    extra_infos["target"].append(str(md["target_number"]))
+                else:
+                    extra_infos["target"].append(str(example.get("gt_answer", "")))
 
         # Optional LLM-judge obfuscation score
         if self.obfuscation_weight > 0:

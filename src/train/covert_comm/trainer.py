@@ -717,9 +717,12 @@ class CovertCommTaskRunner(TaskRunner):
             collate_fn=collate_fn,
             train_sampler=train_sampler,
         )
-        # Optionally inject the lightweight CovertCommReward from config
+        # Inject the lightweight CovertCommReward only when the LLM judge
+        # is disabled (obfuscation_weight == 0).  When obfuscation_weight > 0
+        # we skip injection so _fit() falls through to
+        # CovertCommunicationReward which includes the judge.
         cc_cfg = config.get("covert_comm", {})
-        if cc_cfg:
+        if cc_cfg and float(cc_cfg.get("obfuscation_weight", 0.0)) == 0.0:
             trainer.covert_comm_reward = CovertCommReward(
                 correctness_reward=cc_cfg.get("correct_reward", 3.0),
                 digit_penalty_per_char=abs(cc_cfg.get("digit_penalty", 0.5)),

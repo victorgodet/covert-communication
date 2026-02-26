@@ -54,6 +54,8 @@ def train(
     seed: int = 1,
     correctness_reward: float = 3.0,
     digit_penalty: float = 0.5,
+    obfuscation_weight: float = 0.0,
+    judge_model_id: str = "anthropic/claude-haiku-4.5",
     num_generations: int = 8,
     num_prompts: int = 16,
     max_prompt_length: int = 512,
@@ -74,6 +76,8 @@ def train(
         seed: Random seed.
         correctness_reward: Reward for correct decode.
         digit_penalty: Penalty per digit character in encoded text.
+        obfuscation_weight: Weight for LLM judge obfuscation score (0 = disabled).
+        judge_model_id: OpenRouter model ID for the obfuscation judge.
         num_generations: Generations per prompt (halved from default —
             two generate calls per step).
         num_prompts: Number of prompts per batch.
@@ -88,7 +92,10 @@ def train(
         print(f"Dataset not found at {dataset_path}, generating...")
         _generate_dataset(level=level, output_dir=f"{RESULTS_PATH}/data")
 
+    obfuscation_weight = float(obfuscation_weight)
     run_name = f"covert_comm_level{level}_cr{correctness_reward}_dp{digit_penalty}"
+    if obfuscation_weight > 0:
+        run_name += f"_ow{obfuscation_weight}"
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_name}"
 
     config = GRPOConfig(
@@ -110,7 +117,8 @@ def train(
         correct_reward=float(correctness_reward),
         incorrect_penalty=0.0,  # CovertCommReward uses 0 for incorrect
         digit_penalty_value=float(digit_penalty),
-        obfuscation_weight=0.0,  # No LLM judge for lightweight reward
+        obfuscation_weight=obfuscation_weight,
+        judge_model_id=str(judge_model_id),
         # Empty reward/screening — trainer computes rewards directly
         reward_funcs_kwargs={},
         screening_funcs_kwargs={},
