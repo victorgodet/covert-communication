@@ -59,13 +59,14 @@ def train(
     num_generations: int = 8,
     num_prompts: int = 16,
     max_prompt_length: int = 512,
-    max_completion_length: int = 256,
+    max_completion_length: int = 1536,
+    max_message_length: int = 128,
     temperature: float = 1.0,
     beta: float = 0.001,
     save_steps: int = 0,
     save_only_model: bool = True,
     resume_from: str | None = None,
-    enable_thinking: bool = False,
+    enable_thinking: bool = True,
     **kwargs,
 ):
     """Run covert communication training.
@@ -83,7 +84,8 @@ def train(
             two generate calls per step).
         num_prompts: Number of prompts per batch.
         max_prompt_length: Maximum prompt token length.
-        max_completion_length: Maximum completion token length.
+        max_completion_length: Maximum completion token length (includes think + message).
+        max_message_length: Maximum message token length after stripping think blocks.
         resume_from: Path to checkpoint to resume from.
         enable_thinking: Enable chain-of-thought for encoder and decoder.
     """
@@ -117,6 +119,7 @@ def train(
         save_only_model=save_only_model,
         resume_from_checkpoint=resume_from is not None,
         enable_thinking=bool(enable_thinking),
+        max_message_length=int(max_message_length),
         # Covert-comm reward settings
         correct_reward=float(correctness_reward),
         incorrect_penalty=-0.5,

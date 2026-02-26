@@ -159,6 +159,26 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         return reward_tensor
 
     # ------------------------------------------------------------------
+    # Message truncation
+    # ------------------------------------------------------------------
+
+    def _truncate_messages(self, texts: list[str], max_tokens: int) -> list[str]:
+        """Truncate each text to at most *max_tokens* tokens.
+
+        Re-tokenizes, truncates, and decodes back to string.  This ensures
+        the decoder and judge never see more than *max_tokens* of message
+        content (think blocks have already been stripped at this point).
+        """
+        truncated = []
+        for text in texts:
+            ids = self.tokenizer.encode(text, add_special_tokens=False)
+            if len(ids) > max_tokens:
+                ids = ids[:max_tokens]
+                text = self.tokenizer.decode(ids, skip_special_tokens=True)
+            truncated.append(text)
+        return truncated
+
+    # ------------------------------------------------------------------
     # Console logging
     # ------------------------------------------------------------------
 
@@ -261,6 +281,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
         n_gen = self.config.actor_rollout_ref.rollout.n  # num_generations per prompt
         max_prompt_length = self.config.data.max_prompt_length
+        max_message_length = covert_reward_cfg.get("max_message_length", None)
 
         progress_bar = tqdm(
             total=self.total_training_steps, initial=self.global_steps, desc="Covert Comm Training"
@@ -302,8 +323,16 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     if "response_mask" not in encode_batch.batch.keys():
                         encode_batch.batch["response_mask"] = compute_response_mask(encode_batch)
 
-                    # Decode encode responses to text
+                    # Decode encode responses to text (think blocks already stripped)
                     encode_responses_str = convert_responses_to_str(encode_batch, self.tokenizer)
+
+                    # Truncate messages to max_message_length tokens so the
+                    # decoder and judge only see a bounded-length message.
+                    if max_message_length is not None:
+                        encode_responses_str = self._truncate_messages(
+                            encode_responses_str, max_message_length
+                        )
+
                     n_samples = len(encode_responses_str)
 
                     # Get repeated examples for reward computation

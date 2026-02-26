@@ -174,6 +174,7 @@ class GRPOConfig(TrainingConfig):
     repetition_penalty: float = 1.0 # Default to 1.0, no effect on repetition
     generation_kwargs: dict = {} # Other arguments to pass to vLLM
     enable_thinking: bool = False # Default False, only applied if the model is a reasoning model
+    max_message_length: int | None = None # Max tokens for encoder message after stripping <think> blocks (None = no truncation)
 
     # Activations caching settings
     cache_activations: bool = False
