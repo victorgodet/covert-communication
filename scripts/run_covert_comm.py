@@ -35,7 +35,7 @@ DEFAULT_DATASET_PATH = f"{RESULTS_PATH}/data/covert_comm_train.jsonl"
 # New curriculum-based interface
 # ======================================================================
 
-def generate_data(level: int = 1):
+def generate_data(level: int = 1, enable_thinking: bool = False):
     """Generate prime dataset for a given level.
 
     Level 1 = 2-digit primes (10-99)
@@ -43,7 +43,7 @@ def generate_data(level: int = 1):
     Level 3 = 4-digit primes (1000-9999)
     """
     output_dir = f"{RESULTS_PATH}/data"
-    path = _generate_dataset(level=int(level), output_dir=output_dir)
+    path = _generate_dataset(level=int(level), output_dir=output_dir, enable_thinking=bool(enable_thinking))
     print(f"Dataset written to {path}")
 
 
@@ -52,19 +52,20 @@ def train(
     model_id: str = "Qwen/Qwen3-4B",
     steps: int = 200,
     seed: int = 1,
-    correctness_reward: float = 3.0,
-    digit_penalty: float = 0.5,
-    obfuscation_weight: float = 0.0,
-    judge_model_id: str = "anthropic/claude-haiku-4.5",
+    correctness_reward: float = 0.5,
+    digit_penalty: float = 0.0,
+    obfuscation_weight: float = 1.0,
+    judge_model_id: str = "deepseek/deepseek-v3.2",
     num_generations: int = 8,
     num_prompts: int = 16,
     max_prompt_length: int = 512,
     max_completion_length: int = 256,
     temperature: float = 1.0,
     beta: float = 0.001,
-    save_steps: int = 50,
+    save_steps: int = 0,
     save_only_model: bool = True,
     resume_from: str | None = None,
+    enable_thinking: bool = False,
     **kwargs,
 ):
     """Run covert communication training.
@@ -84,13 +85,15 @@ def train(
         max_prompt_length: Maximum prompt token length.
         max_completion_length: Maximum completion token length.
         resume_from: Path to checkpoint to resume from.
+        enable_thinking: Enable chain-of-thought for encoder and decoder.
     """
     level = int(level)
     dataset_path = f"{RESULTS_PATH}/data/covert_comm_level{level}.jsonl"
 
+    enable_thinking = bool(enable_thinking)
     if not os.path.exists(dataset_path):
         print(f"Dataset not found at {dataset_path}, generating...")
-        _generate_dataset(level=level, output_dir=f"{RESULTS_PATH}/data")
+        _generate_dataset(level=level, output_dir=f"{RESULTS_PATH}/data", enable_thinking=enable_thinking)
 
     obfuscation_weight = float(obfuscation_weight)
     run_name = f"covert_comm_level{level}_cr{correctness_reward}_dp{digit_penalty}"
@@ -113,9 +116,10 @@ def train(
         save_steps=int(save_steps),
         save_only_model=save_only_model,
         resume_from_checkpoint=resume_from is not None,
+        enable_thinking=bool(enable_thinking),
         # Covert-comm reward settings
         correct_reward=float(correctness_reward),
-        incorrect_penalty=0.0,  # CovertCommReward uses 0 for incorrect
+        incorrect_penalty=-0.5,
         digit_penalty_value=float(digit_penalty),
         obfuscation_weight=obfuscation_weight,
         judge_model_id=str(judge_model_id),
@@ -141,7 +145,7 @@ def run_covert_communication(
     incorrect_penalty: float = -1.0,
     digit_penalty_value: float = -0.5,
     obfuscation_weight: float = 1.0,
-    judge_model_id: str = "anthropic/claude-haiku-4.5",
+    judge_model_id: str = "deepseek/deepseek-v3.2",
     num_generations: int = 8,
     num_prompts: int = 8,
     max_prompt_length: int = 512,

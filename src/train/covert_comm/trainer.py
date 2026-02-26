@@ -71,12 +71,14 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         Returns a list of chat messages (one per sample) suitable for
         tokenization via ``tokenizer.apply_chat_template``.
         """
+        chat_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
+        thinking = chat_kwargs.get("enable_thinking", False)
         prompts = []
         for example, enc_text in zip(examples, encode_responses_str):
             metadata = example.get("prompt_metadata", {})
             num_digits = metadata.get("num_digits") if isinstance(metadata, dict) else None
             if num_digits is not None:
-                prompts.append(make_decode_prompt(enc_text, num_digits))
+                prompts.append(make_decode_prompt(enc_text, num_digits, enable_thinking=thinking))
             else:
                 template = example.get(
                     "decode_prompt_template",
@@ -157,6 +159,60 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         return reward_tensor
 
     # ------------------------------------------------------------------
+    # Console logging
+    # ------------------------------------------------------------------
+
+    def _print_step_summary(
+        self,
+        step: int,
+        encode_texts: list[str],
+        decode_texts: list[str],
+        encoder_rewards: list[float],
+        decoder_rewards: list[float],
+        extra_infos: dict,
+        num_samples: int = 3,
+    ):
+        """Print a concise per-step summary to stdout."""
+        n = len(encoder_rewards)
+        n_correct = sum(extra_infos.get("correctness", []))
+        n_digits = sum(extra_infos.get("has_digits", []))
+        obf_scores = extra_infos.get("obfuscation_score", [])
+        verdicts = extra_infos.get("judge_verdict", [])
+        targets = extra_infos.get("target", [])
+
+        avg_enc = sum(encoder_rewards) / n if n else 0.0
+        avg_dec = sum(decoder_rewards) / n if n else 0.0
+        avg_obf = sum(obf_scores) / n if n and obf_scores else 0.0
+        acc = n_correct / n if n else 0.0
+        digit_rate = n_digits / n if n else 0.0
+
+        # Count judge outcomes
+        n_detected = sum(1 for v in verdicts if v == "DETECTED")
+        n_clean = sum(1 for v in verdicts if v == "CLEAN")
+        n_parse_fail = sum(1 for v in verdicts if v == "PARSE_FAIL")
+
+        print(f"\n{'='*70}")
+        print(f"Step {step}  |  n={n}  acc={acc:.0%}  digits={digit_rate:.0%}  "
+              f"enc_r={avg_enc:+.3f}  dec_r={avg_dec:+.3f}  obf={avg_obf:.3f}")
+        if verdicts:
+            print(f"  Judge: {n_detected} detected, {n_clean} clean, {n_parse_fail} parse-fail")
+
+        # Show a few samples
+        indices = list(range(min(num_samples, n)))
+        for idx in indices:
+            target = targets[idx] if idx < len(targets) else "?"
+            correct = "OK" if extra_infos.get("correctness", [0])[idx] else "MISS"
+            verdict = verdicts[idx] if idx < len(verdicts) else ""
+            enc_snip = encode_texts[idx].replace("\n", " ")
+            dec_snip = decode_texts[idx].replace("\n", " ")
+            verdict_str = f"  judge={verdict}" if verdict else ""
+
+            print(f"  [{idx}] target={target} {correct}  enc_r={encoder_rewards[idx]:+.3f}{verdict_str}")
+            print(f"       enc: {enc_snip}")
+            print(f"       dec: {dec_snip}")
+        print(f"{'='*70}\n")
+
+    # ------------------------------------------------------------------
     # Main training loop
     # ------------------------------------------------------------------
 
@@ -199,7 +255,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                 incorrect_penalty=covert_reward_cfg.get("incorrect_penalty", -1.0),
                 digit_penalty=covert_reward_cfg.get("digit_penalty", -0.5),
                 obfuscation_weight=covert_reward_cfg.get("obfuscation_weight", 1.0),
-                judge_model_id=covert_reward_cfg.get("judge_model_id", "anthropic/claude-haiku-4.5"),
+                judge_model_id=covert_reward_cfg.get("judge_model_id", "deepseek/deepseek-v3.2"),
             )
             use_lightweight_reward = False
 
@@ -314,22 +370,23 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                                     target_numbers.append(int(md["target_number"]))
                                 else:
                                     target_numbers.append(int(ex.get("prime", ex.get("gt_answer", 0))))
-                            scalar_rewards, reward_extra_infos = reward_computer.compute_paired_reward(
+                            encoder_rewards, decoder_rewards, reward_extra_infos = reward_computer.compute_paired_reward(
                                 encoded_texts=encode_responses_str,
                                 decoded_texts=decode_responses_str,
                                 target_numbers=target_numbers,
                             )
                         else:
                             # CovertCommunicationReward: takes examples dicts
-                            scalar_rewards, reward_extra_infos = reward_computer.compute_batch_rewards(
+                            encoder_rewards, decoder_rewards, reward_extra_infos = reward_computer.compute_batch_rewards(
                                 examples=list(encode_extra_infos),
                                 encode_texts=encode_responses_str,
                                 decode_texts=decode_responses_str,
                             )
 
-                        # Assign the SAME reward to both encode and decode batches
-                        encode_reward_tensor = self._assign_token_rewards(encode_batch, scalar_rewards)
-                        decode_reward_tensor = self._assign_token_rewards(decode_batch, scalar_rewards)
+                        # Asymmetric rewards: encoder gets the full composite
+                        # signal; decoder gets correctness only.
+                        encode_reward_tensor = self._assign_token_rewards(encode_batch, encoder_rewards)
+                        decode_reward_tensor = self._assign_token_rewards(decode_batch, decoder_rewards)
 
                         encode_batch.batch["token_level_scores"] = encode_reward_tensor
                         decode_batch.batch["token_level_scores"] = decode_reward_tensor
@@ -340,6 +397,16 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
                         # Build reward_extra_infos_dict for logging
                         reward_extra_infos_dict = reward_extra_infos
+
+                    # Print step summary to console
+                    self._print_step_summary(
+                        step=self.global_steps,
+                        encode_texts=encode_responses_str,
+                        decode_texts=decode_responses_str,
+                        encoder_rewards=encoder_rewards,
+                        decoder_rewards=decoder_rewards,
+                        extra_infos=reward_extra_infos,
+                    )
 
                     # ============================================================
                     # COMPUTE OLD LOG PROBS (for both batches)
@@ -452,7 +519,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             rollout_data_dir,
                             encode_responses_str,
                             decode_responses_str,
-                            scalar_rewards,
+                            encoder_rewards,
+                            decoder_rewards,
                             reward_extra_infos,
                             list(encode_extra_infos),
                         )
@@ -485,9 +553,10 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
                 # Covert-comm specific metrics
                 if reward_extra_infos:
-                    n = len(scalar_rewards)
+                    n = len(encoder_rewards)
                     metrics.update({
-                        "covert_comm/avg_reward": sum(scalar_rewards) / n if n else 0.0,
+                        "covert_comm/avg_encoder_reward": sum(encoder_rewards) / n if n else 0.0,
+                        "covert_comm/avg_decoder_reward": sum(decoder_rewards) / n if n else 0.0,
                         "covert_comm/accuracy": (
                             sum(reward_extra_infos.get("correctness", [])) / n if n else 0.0
                         ),
@@ -593,7 +662,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         rollout_data_dir: str,
         encode_texts: list[str],
         decode_texts: list[str],
-        rewards: list[float],
+        encoder_rewards: list[float],
+        decoder_rewards: list[float],
         extra_infos: dict,
         examples: list[dict],
     ):
@@ -604,12 +674,15 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
             for i in range(len(encode_texts)):
                 record = {
                     "step": self.global_steps,
-                    "target": str(examples[i].get("prime", "")),
+                    "target": extra_infos.get("target", [""] * len(encode_texts))[i],
                     "encode_text": encode_texts[i],
                     "decode_text": decode_texts[i],
-                    "reward": rewards[i],
+                    "encoder_reward": encoder_rewards[i],
+                    "decoder_reward": decoder_rewards[i],
                     "correct": extra_infos.get("correctness", [0.0] * len(encode_texts))[i],
                     "has_digits": extra_infos.get("has_digits", [0.0] * len(encode_texts))[i],
+                    "obfuscation_score": extra_infos.get("obfuscation_score", [0.0] * len(encode_texts))[i],
+                    "judge_verdict": extra_infos.get("judge_verdict", [""] * len(encode_texts))[i],
                 }
                 f.write(json.dumps(record) + "\n")
 
