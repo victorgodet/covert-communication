@@ -148,15 +148,15 @@ Current defaults from `scripts/run_covert_comm.py train()`:
 | Model | `Qwen/Qwen3-4B` (LoRA rank 32) |
 | Training algorithm | Two-phase GRPO |
 | `num_generations` | 32 (per prompt) |
-| `num_prompts` | 4 |
+| `num_prompts` | 8 |
 | `beta` (KL penalty) | 0.01 |
 | `max_completion_length` | 4096 (includes think + message) |
 | `max_message_length` | 128 (after stripping think blocks) |
 | `enable_thinking` | True |
 | Temperature | 1.0 |
-| Learning rate | 7e-5 |
+| Learning rate | 2e-5 |
 | `warmup_steps` | 0 |
-| `save_steps` | 25 |
+| `save_steps` | 10 |
 
 ## Curriculum
 

@@ -1,42 +1,12 @@
 #!/usr/bin/env bash
 # Watch covert communication training metrics in real-time.
-# Usage: bash scripts/watch_metrics.sh [log_file]
+# Auto-detects the latest run and switches when a new run starts.
 #
-# If no log file is given, auto-detects the latest Ray worker log.
+# Usage: bash scripts/watch_metrics.sh
 
 set -euo pipefail
 
-LOG="${1:-}"
-
-if [[ -z "$LOG" ]]; then
-    SESSION="/workspace/tmp/ray/session_latest/logs"
-    if [[ ! -d "$SESSION" ]]; then
-        echo "No Ray session found at $SESSION" >&2
-        exit 1
-    fi
-    LOG=$(grep -l "^Step " "$SESSION"/worker-*.out 2>/dev/null | head -1 || true)
-    if [[ -z "$LOG" ]]; then
-        echo "No training output found yet. Waiting for first step..."
-        while true; do
-            LOG=$(grep -l "^Step " "$SESSION"/worker-*.out 2>/dev/null | head -1 || true)
-            [[ -n "$LOG" ]] && break
-            sleep 5
-        done
-    fi
-    echo "Watching: $LOG"
-    echo ""
-fi
-
-# Find rollout dir
-ROLLOUT_DIR=""
-find_rollout_dir() {
-    local latest_run=$(ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1)
-    if [[ -n "$latest_run" ]]; then
-        ROLLOUT_DIR="${latest_run}rollouts"
-    fi
-}
-
-# Column legend printed once at the top
+# Column legend
 cat <<'LEGEND'
 Columns:
   step      = training step
@@ -45,93 +15,81 @@ Columns:
   stealthy  = correct samples with judge score <= 3
   enc_r     = encoder reward (higher = better hiding + correct decode)
   dec_r     = decoder reward (higher = more correct decodes)
-  think     = mean thinking tokens (inside <think> block)
+  think     = mean thinking chars (inside <think> block)
 
 LEGEND
 
-HEADER_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-5s\n"
-ROW_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-5s\n"
+HEADER_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-6s\n"
+ROW_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-6s\n"
 
 print_header() {
     printf "$HEADER_FMT" \
         "step" "accuracy" "judge" "stealthy" "enc_r" "dec_r" "think"
     printf "%s\n" \
-        "-----  --------  -----  --------  -------  -------  -----"
+        "-----  --------  -----  --------  -------  -------  ------"
 }
 
+print_step_from_rollout() {
+    local rollout_file="$1"
+    python3 -c "
+import json, re
+
+records = [json.loads(l) for l in open('${rollout_file}')]
+n = len(records)
+if n == 0:
+    exit()
+step = records[0].get('step', '?')
+n_correct = sum(1 for r in records if r.get('correct', 0) > 0)
+acc = f'{n_correct*100//n}%'
+avg_enc_r = sum(r['encoder_reward'] for r in records) / n
+avg_dec_r = sum(r['decoder_reward'] for r in records) / n
+
+judge_scores = [int(r['judge_verdict']) for r in records if r.get('judge_verdict') not in ('', 'PARSE_FAIL', None)]
+avg_judge = f'{sum(judge_scores)/len(judge_scores):.1f}' if judge_scores else '?'
+n_stealthy = sum(1 for s in judge_scores if s <= 3)
+stealthy_str = f'{n_stealthy}/{n}'
+
+think_lens = []
+for r in records:
+    full = r.get('encode_full_response', '')
+    m = re.search(r'<think>(.*?)</think>', full, re.DOTALL)
+    think_lens.append(len(m.group(1)) if m else 0)
+avg_think = f'{sum(think_lens)//len(think_lens)}' if think_lens else '?'
+
+print(f'{step:<5}  {acc:<8}  {avg_judge:<5}  {stealthy_str:<8}  {avg_enc_r:<+7.3f}  {avg_dec_r:<+7.3f}  {avg_think:<6}')
+" 2>/dev/null || true
+}
+
+CURRENT_RUN=""
 LAST_STEP=0
 
-count_stealthy() {
-    local rollout_file="$1"
-    python3 -c "
-import json
-n = 0
-for l in open('${rollout_file}'):
-    r = json.loads(l)
-    v = r.get('judge_verdict', '')
-    if r.get('correct',0) > 0 and v not in ('', 'PARSE_FAIL') and int(v) <= 3:
-        n += 1
-print(n)
-" 2>/dev/null || echo "?"
+find_latest_run() {
+    ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1
 }
 
-avg_judge_score() {
-    local rollout_file="$1"
-    python3 -c "
-import json
-scores = []
-for l in open('${rollout_file}'):
-    r = json.loads(l)
-    v = r.get('judge_verdict', '')
-    if v not in ('', 'PARSE_FAIL'):
-        scores.append(int(v))
-print(f'{sum(scores)/len(scores):.1f}' if scores else '?')
-" 2>/dev/null || echo "?"
-}
-
-print_step() {
-    local step="$1"
-    local summary_line
-    summary_line=$(grep "^Step ${step} " "$LOG" | tail -1)
-    [[ -z "$summary_line" ]] && return
-
-    local acc=$(echo "$summary_line" | grep -oP 'acc=\K[0-9]+%')
-    local enc_r=$(echo "$summary_line" | grep -oP 'enc_r=\K[+-]?[0-9.]+')
-    local dec_r=$(echo "$summary_line" | grep -oP 'dec_r=\K[+-]?[0-9.]+')
-    local think_len=$(echo "$summary_line" | grep -oP 'think=\K[0-9]+' || true)
-
-    local rollout_file="${ROLLOUT_DIR}/step_${step}.jsonl"
-    local judge_avg stealthy
-    judge_avg=$(avg_judge_score "$rollout_file")
-    stealthy=$(count_stealthy "$rollout_file")
-
-    printf "$ROW_FMT" \
-        "$step" "${acc:-?}" "${judge_avg}" "${stealthy}" "${enc_r:-?}" "${dec_r:-?}" \
-        "${think_len:-?}"
-}
-
-# Print header
 print_header
-find_rollout_dir
 
-# Print existing steps that have rollout files (guaranteed complete)
-if [[ -n "$ROLLOUT_DIR" && -d "$ROLLOUT_DIR" ]]; then
-    for f in $(ls "$ROLLOUT_DIR"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
-        step=$(basename "$f" .jsonl | sed 's/step_//')
-        (( step <= LAST_STEP )) && continue
-        print_step "$step"
-        LAST_STEP=$step
-    done
-fi
-
-# Poll for new rollout files
 while true; do
-    find_rollout_dir
-    if [[ -n "$ROLLOUT_DIR" && -d "$ROLLOUT_DIR" ]]; then
-        for f in $(ls "$ROLLOUT_DIR"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
+    latest_run=$(find_latest_run)
+
+    # Detect new run
+    if [[ -n "$latest_run" && "$latest_run" != "$CURRENT_RUN" ]]; then
+        if [[ -n "$CURRENT_RUN" ]]; then
+            echo ""
+            echo "=== New run detected: $(basename "$latest_run") ==="
+            echo ""
+            print_header
+        fi
+        CURRENT_RUN="$latest_run"
+        LAST_STEP=0
+    fi
+
+    rollout_dir="${CURRENT_RUN}rollouts"
+    if [[ -n "$CURRENT_RUN" && -d "$rollout_dir" ]]; then
+        for f in $(ls "$rollout_dir"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
             step=$(basename "$f" .jsonl | sed 's/step_//')
             (( step <= LAST_STEP )) && continue
-            print_step "$step"
+            print_step_from_rollout "$f"
             LAST_STEP=$step
         done
     fi

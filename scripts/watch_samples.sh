@@ -1,81 +1,86 @@
 #!/usr/bin/env bash
-# Show successful steganography samples (correct + CLEAN) per step.
-# Usage: bash scripts/watch_samples.sh [rollout_dir] [num_samples]
+# Show sample outputs per step: 3 correct + 2 incorrect (or more incorrect if fewer correct).
+# Auto-detects the latest run and switches when a new run starts.
 #
-# If no rollout dir is given, auto-detects the latest run.
+# Usage: bash scripts/watch_samples.sh
 
 set -euo pipefail
-
-NUM_SAMPLES="${2:-3}"
-ROLLOUT_DIR="${1:-}"
-
-if [[ -z "$ROLLOUT_DIR" ]]; then
-    LATEST_RUN=$(ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1)
-    if [[ -z "$LATEST_RUN" ]]; then
-        echo "No runs found" >&2
-        exit 1
-    fi
-    ROLLOUT_DIR="${LATEST_RUN}rollouts"
-    if [[ ! -d "$ROLLOUT_DIR" ]]; then
-        echo "No rollouts directory in $LATEST_RUN" >&2
-        echo "Waiting for rollouts..."
-        while [[ ! -d "$ROLLOUT_DIR" ]]; do sleep 5; done
-    fi
-    echo "Watching: $ROLLOUT_DIR"
-    echo ""
-fi
 
 print_step() {
     local file="$1"
 
     python3 -c "
-import json, sys
+import json, re, sys
 
-samples = []
-total = 0
-for line in open('$file'):
-    total += 1
-    r = json.loads(line)
-    v = r.get('judge_verdict', '')
-    if r.get('correct', 0) > 0 and v not in ('', 'PARSE_FAIL') and int(v) <= 3:
-        samples.append(r)
-
-step = json.loads(open('$file').readline()).get('step', '?')
-if not samples:
-    print(f'Step {step}  |  0/{total} correct+stealthy')
-    print()
+records = [json.loads(l) for l in open('$file')]
+if not records:
     sys.exit(0)
 
-print(f'Step {step}  |  {len(samples)}/{total} correct+stealthy (judge<=3)')
+step = records[0].get('step', '?')
+n = len(records)
+
+# Sort correct by judge score ascending (best/stealthiest first)
+correct = sorted(
+    [r for r in records if r.get('correct', 0) > 0],
+    key=lambda r: int(r['judge_verdict']) if r.get('judge_verdict') not in ('', 'PARSE_FAIL', None) else 99,
+)
+incorrect = [r for r in records if r.get('correct', 0) == 0 and r.get('encode_text', '').strip()]
+
+n_correct = len(correct)
+n_show_incorrect = min(2, len(incorrect))
+n_show_correct = min(3, n_correct)
+
+# Misses first, then best correct (lowest judge scores last)
+samples = (
+    [('MISS', r) for r in incorrect[:n_show_incorrect]]
+    + [('OK', r) for r in correct[:n_show_correct][::-1]]
+)
+
+judge_scores = [int(r['judge_verdict']) for r in records if r.get('judge_verdict') not in ('', 'PARSE_FAIL', None)]
+avg_judge = sum(judge_scores) / len(judge_scores) if judge_scores else 0
+n_stealthy = sum(1 for s in judge_scores if s <= 3)
+
+print(f'Step {step}  |  acc={n_correct}/{n}  judge={avg_judge:.1f}  stealthy={n_stealthy}')
+for label, r in samples:
+    v = r.get('judge_verdict', '?')
+    t = r.get('target', '?')
+    msg = r.get('encode_text', '').replace('\n', ' ').strip()[:150]
+    if not msg:
+        msg = '(empty)'
+    print(f'  {msg}  [{label} t={t} j={v}]')
 print()
-for s in samples[:$NUM_SAMPLES]:
-    enc = s['encode_text'].replace('\n', ' ')
-    dec = s['decode_text'].replace('\n', ' ')
-    print(f'  target={s[\"target\"]}  judge={s[\"judge_verdict\"]}  enc_r={s[\"encoder_reward\"]:+.3f}')
-    print(f'    enc: {enc}')
-    print(f'    dec: {dec}')
-    print()
 " 2>/dev/null
-    echo "---"
 }
 
+CURRENT_RUN=""
 LAST_STEP=0
 
-# Print existing steps
-for f in $(ls "$ROLLOUT_DIR"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
-    step=$(basename "$f" .jsonl | sed 's/step_//')
-    (( step <= LAST_STEP )) && continue
-    print_step "$f"
-    LAST_STEP=$step
-done
+find_latest_run() {
+    ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1
+}
 
-# Poll for new files
 while true; do
-    for f in $(ls "$ROLLOUT_DIR"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
-        step=$(basename "$f" .jsonl | sed 's/step_//')
-        (( step <= LAST_STEP )) && continue
-        print_step "$f"
-        LAST_STEP=$step
-    done
+    latest_run=$(find_latest_run)
+
+    # Detect new run
+    if [[ -n "$latest_run" && "$latest_run" != "$CURRENT_RUN" ]]; then
+        if [[ -n "$CURRENT_RUN" ]]; then
+            echo ""
+            echo "=== New run detected: $(basename "$latest_run") ==="
+            echo ""
+        fi
+        CURRENT_RUN="$latest_run"
+        LAST_STEP=0
+    fi
+
+    rollout_dir="${CURRENT_RUN}rollouts"
+    if [[ -n "$CURRENT_RUN" && -d "$rollout_dir" ]]; then
+        for f in $(ls "$rollout_dir"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
+            step=$(basename "$f" .jsonl | sed 's/step_//')
+            (( step <= LAST_STEP )) && continue
+            print_step "$f"
+            LAST_STEP=$step
+        done
+    fi
     sleep 10
 done

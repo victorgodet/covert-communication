@@ -135,7 +135,7 @@ class GRPOConfig(TrainingConfig):
     beta: float = 1e-3 # KL coefficient
 
     optim: Literal["adamw_8bit", "adamw"] = "adamw_8bit"
-    learning_rate: float = 7e-5
+    learning_rate: float = 2e-5
     lr_scheduler_type: Literal["linear", "cosine", "constant"] = "cosine" # Note: Linear not supported by verl
     warmup_ratio: float | None = None
     warmup_steps: int = 0 # Will overwrite any setting for warmup ratio
