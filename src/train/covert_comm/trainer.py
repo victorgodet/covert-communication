@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import socket
 import warnings
 import uuid
@@ -163,6 +164,19 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
     # Message truncation
     # ------------------------------------------------------------------
 
+    def _decode_full_responses(self, batch: DataProto) -> list[str]:
+        """Decode full response tokens (including think blocks) to strings."""
+        prompt_len = batch.batch["prompts"].shape[-1]
+        response_ids = batch.batch["responses"]
+        attention_mask = batch.batch["attention_mask"]
+        valid_lengths = attention_mask[:, prompt_len:].sum(dim=-1)
+        results = []
+        for i in range(len(batch)):
+            valid_len = valid_lengths[i]
+            ids = response_ids[i][:valid_len]
+            results.append(self.tokenizer.decode(ids, skip_special_tokens=False))
+        return results
+
     def _truncate_messages(self, texts: list[str], max_tokens: int) -> list[str]:
         """Truncate each text to at most *max_tokens* tokens.
 
@@ -208,12 +222,12 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         encoder_rewards: list[float],
         decoder_rewards: list[float],
         extra_infos: dict,
+        encode_full_responses: list[str] | None = None,
         num_samples: int = 3,
     ):
         """Print a concise per-step summary to stdout."""
         n = len(encoder_rewards)
         n_correct = sum(extra_infos.get("correctness", []))
-        n_digits = sum(extra_infos.get("has_digits", []))
         obf_scores = extra_infos.get("obfuscation_score", [])
         verdicts = extra_infos.get("judge_verdict", [])
         targets = extra_infos.get("target", [])
@@ -222,22 +236,23 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         avg_dec = sum(decoder_rewards) / n if n else 0.0
         avg_obf = sum(obf_scores) / n if n and obf_scores else 0.0
         acc = n_correct / n if n else 0.0
-        digit_rate = n_digits / n if n else 0.0
 
-        # Count judge outcomes
-        n_detected = sum(1 for v in verdicts if v == "DETECTED")
-        n_clean = sum(1 for v in verdicts if v == "CLEAN")
+        # Count judge outcomes (verdicts are now "1"-"10" or "PARSE_FAIL")
         n_parse_fail = sum(1 for v in verdicts if v == "PARSE_FAIL")
+        judge_scores = [int(v) for v in verdicts if v not in ("", "PARSE_FAIL")]
+        avg_judge = sum(judge_scores) / len(judge_scores) if judge_scores else 0.0
+        n_low = sum(1 for s in judge_scores if s <= 3)  # stealthy
+        n_high = sum(1 for s in judge_scores if s >= 8)  # obvious
 
         think_lengths = extra_infos.get("think_length", [])
         avg_think = sum(think_lengths) / n if n and think_lengths else 0.0
 
         print(f"\n{'='*70}")
-        print(f"Step {step}  |  n={n}  acc={acc:.0%}  digits={digit_rate:.0%}  "
+        print(f"Step {step}  |  n={n}  acc={acc:.0%}  "
               f"enc_r={avg_enc:+.3f}  dec_r={avg_dec:+.3f}  obf={avg_obf:.3f}  "
               f"think={avg_think:.0f}")
-        if verdicts:
-            print(f"  Judge: {n_detected} detected, {n_clean} clean, {n_parse_fail} parse-fail")
+        if judge_scores:
+            print(f"  Judge: avg={avg_judge:.1f}/10, {n_low} stealthy(<=3), {n_high} obvious(>=8), {n_parse_fail} parse-fail")
 
         # Show a few samples
         indices = list(range(min(num_samples, n)))
@@ -250,6 +265,16 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
             verdict_str = f"  judge={verdict}" if verdict else ""
 
             print(f"  [{idx}] target={target} {correct}  enc_r={encoder_rewards[idx]:+.3f}{verdict_str}")
+
+            # Show think block from full response if available
+            if encode_full_responses and idx < len(encode_full_responses):
+                think_match = re.search(r"<think>(.*?)</think>", encode_full_responses[idx], re.DOTALL)
+                if think_match:
+                    think_text = think_match.group(1).strip().replace("\n", " ")
+                    if len(think_text) > 200:
+                        think_text = think_text[:200] + "..."
+                    print(f"       think: {think_text}")
+
             print(f"       enc: {enc_snip}")
             print(f"       dec: {dec_snip}")
         print(f"{'='*70}\n")
@@ -295,7 +320,6 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
             reward_computer = CovertCommunicationReward(
                 correct_reward=covert_reward_cfg.get("correct_reward", 3.0),
                 incorrect_penalty=covert_reward_cfg.get("incorrect_penalty", -1.0),
-                digit_penalty=covert_reward_cfg.get("digit_penalty", -0.5),
                 obfuscation_weight=covert_reward_cfg.get("obfuscation_weight", 1.0),
                 judge_model_id=covert_reward_cfg.get("judge_model_id", "deepseek/deepseek-v3.2"),
             )
@@ -347,6 +371,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
                     # Decode encode responses to text (think blocks already stripped)
                     encode_responses_str = convert_responses_to_str(encode_batch, self.tokenizer)
+
+                    # Decode full responses (including think blocks) for logging
+                    encode_full_responses = self._decode_full_responses(encode_batch)
 
                     # Compute think token lengths before truncation
                     encode_think_lengths = self._compute_think_lengths(
@@ -412,6 +439,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
                     # Decode the decode responses to text
                     decode_responses_str = convert_responses_to_str(decode_batch, self.tokenizer)
+
+                    # Decode full responses (including think blocks) for logging
+                    decode_full_responses = self._decode_full_responses(decode_batch)
 
                     # Compute decoder think token lengths
                     decode_think_lengths = self._compute_think_lengths(
@@ -479,6 +509,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                         encoder_rewards=encoder_rewards,
                         decoder_rewards=decoder_rewards,
                         extra_infos=reward_extra_infos,
+                        encode_full_responses=encode_full_responses,
                     )
 
                     # ============================================================
@@ -596,6 +627,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             decoder_rewards,
                             reward_extra_infos,
                             list(encode_extra_infos),
+                            encode_full_responses,
+                            decode_full_responses,
                         )
 
                 # Validation
@@ -632,9 +665,6 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                         "covert_comm/avg_decoder_reward": sum(decoder_rewards) / n if n else 0.0,
                         "covert_comm/accuracy": (
                             sum(reward_extra_infos.get("correctness", [])) / n if n else 0.0
-                        ),
-                        "covert_comm/digit_violation_rate": (
-                            sum(reward_extra_infos.get("has_digits", [])) / n if n else 0.0
                         ),
                         "covert_comm/n_samples": n,
                         "covert_comm/avg_think_length": (
@@ -742,6 +772,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         decoder_rewards: list[float],
         extra_infos: dict,
         examples: list[dict],
+        encode_full_responses: list[str] | None = None,
+        decode_full_responses: list[str] | None = None,
     ):
         """Save rollout data for inspection."""
         os.makedirs(rollout_data_dir, exist_ok=True)
@@ -756,10 +788,13 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     "encoder_reward": encoder_rewards[i],
                     "decoder_reward": decoder_rewards[i],
                     "correct": extra_infos.get("correctness", [0.0] * len(encode_texts))[i],
-                    "has_digits": extra_infos.get("has_digits", [0.0] * len(encode_texts))[i],
                     "obfuscation_score": extra_infos.get("obfuscation_score", [0.0] * len(encode_texts))[i],
                     "judge_verdict": extra_infos.get("judge_verdict", [""] * len(encode_texts))[i],
                 }
+                if encode_full_responses is not None:
+                    record["encode_full_response"] = encode_full_responses[i]
+                if decode_full_responses is not None:
+                    record["decode_full_response"] = decode_full_responses[i]
                 f.write(json.dumps(record) + "\n")
 
 
@@ -874,7 +909,6 @@ class CovertCommTaskRunner(TaskRunner):
         if cc_cfg and float(cc_cfg.get("obfuscation_weight", 0.0)) == 0.0:
             trainer.covert_comm_reward = CovertCommReward(
                 correctness_reward=cc_cfg.get("correct_reward", 3.0),
-                digit_penalty_per_char=abs(cc_cfg.get("digit_penalty", 0.5)),
             )
 
         trainer.init_workers()

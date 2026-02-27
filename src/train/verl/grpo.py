@@ -249,7 +249,6 @@ class VerlCovertCommGRPO(VerlGRPO):
         config.covert_comm = {
             "correct_reward": getattr(self.training_config, "correct_reward", 3.0),
             "incorrect_penalty": getattr(self.training_config, "incorrect_penalty", -1.0),
-            "digit_penalty": getattr(self.training_config, "digit_penalty_value", -0.5),
             "obfuscation_weight": getattr(self.training_config, "obfuscation_weight", 1.0),
             "judge_model_id": getattr(self.training_config, "judge_model_id", "deepseek/deepseek-v3.2"),
             "max_message_length": getattr(self.training_config, "max_message_length", None),

@@ -138,7 +138,7 @@ class GRPOConfig(TrainingConfig):
     learning_rate: float = 7e-5
     lr_scheduler_type: Literal["linear", "cosine", "constant"] = "cosine" # Note: Linear not supported by verl
     warmup_ratio: float | None = None
-    warmup_steps: int = 10 # Will overwrite any setting for warmup ratio
+    warmup_steps: int = 0 # Will overwrite any setting for warmup ratio
     weight_decay: float = 0.1
     adam_beta1: float = 0.9
     adam_beta2: float = 0.99
@@ -184,7 +184,6 @@ class GRPOConfig(TrainingConfig):
     # Covert communication settings
     correct_reward: float = 3.0  # Reward for correct decode
     incorrect_penalty: float = -1.0  # Penalty for incorrect decode
-    digit_penalty_value: float = -0.5  # Penalty for digits in encoded text
     obfuscation_weight: float = 1.0  # Weight for LLM judge obfuscation score
     decode_prompt_template: str = (
         "Extract the hidden number from the following text:\n"

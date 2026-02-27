@@ -27,86 +27,113 @@ if [[ -z "$LOG" ]]; then
     echo ""
 fi
 
+# Find rollout dir
+ROLLOUT_DIR=""
+find_rollout_dir() {
+    local latest_run=$(ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1)
+    if [[ -n "$latest_run" ]]; then
+        ROLLOUT_DIR="${latest_run}rollouts"
+    fi
+}
+
 # Column legend printed once at the top
 cat <<'LEGEND'
 Columns:
   step      = training step
   accuracy  = % of samples where decoder recovered the correct number
-  success   = correct + not detected by judge (the goal)
+  judge     = average judge suspicion score (1=innocent, 10=obvious)
+  stealthy  = correct samples with judge score <= 3
   enc_r     = encoder reward (higher = better hiding + correct decode)
   dec_r     = decoder reward (higher = more correct decodes)
-  detected  = samples the judge flagged as suspicious
-  clean     = samples the judge found innocent
   think     = mean thinking tokens (inside <think> block)
 
 LEGEND
 
-HEADER_FMT="%-5s  %-8s  %-7s  %-7s  %-7s  %-8s  %-5s  %-5s\n"
-ROW_FMT="%-5s  %-8s  %-7s  %-7s  %-7s  %-8s  %-5s  %-5s\n"
+HEADER_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-5s\n"
+ROW_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-5s\n"
 
 print_header() {
     printf "$HEADER_FMT" \
-        "step" "accuracy" "success" "enc_r" "dec_r" "detected" "clean" "think"
+        "step" "accuracy" "judge" "stealthy" "enc_r" "dec_r" "think"
     printf "%s\n" \
-        "-----  --------  -------  -------  -------  --------  -----  -----"
+        "-----  --------  -----  --------  -------  -------  -----"
 }
 
 LAST_STEP=0
 
-parse_and_print() {
-    local file="$1"
-
-    # Find rollout dir for success count
-    local rollout_dir=""
-    local latest_run=$(ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1)
-    if [[ -n "$latest_run" ]]; then
-        rollout_dir="${latest_run}rollouts"
-    fi
-
-    while IFS= read -r summary_line; do
-        step=$(echo "$summary_line" | grep -oP 'Step \K[0-9]+')
-        [[ -z "$step" ]] && continue
-        (( step <= LAST_STEP )) && continue
-
-        acc=$(echo "$summary_line" | grep -oP 'acc=\K[0-9]+%')
-        enc_r=$(echo "$summary_line" | grep -oP 'enc_r=\K[+-]?[0-9.]+')
-        dec_r=$(echo "$summary_line" | grep -oP 'dec_r=\K[+-]?[0-9.]+')
-        think_len=$(echo "$summary_line" | grep -oP 'think=\K[0-9]+' || true)
-
-        judge_line=$(grep -A1 "^Step ${step} " "$file" | grep "Judge:" | tail -1 || true)
-        detected="" ; clean=""
-        if [[ -n "$judge_line" ]]; then
-            detected=$(echo "$judge_line" | grep -oP '[0-9]+ detected' | grep -oP '[0-9]+' || true)
-            clean=$(echo "$judge_line" | grep -oP '[0-9]+ clean' | grep -oP '[0-9]+' || true)
-        fi
-
-        # Count correct+clean from rollout JSONL
-        success="?"
-        if [[ -n "$rollout_dir" && -f "${rollout_dir}/step_${step}.jsonl" ]]; then
-            success=$(python3 -c "
+count_stealthy() {
+    local rollout_file="$1"
+    python3 -c "
 import json
-n = sum(1 for l in open('${rollout_dir}/step_${step}.jsonl')
-        if json.loads(l).get('correct',0) > 0 and json.loads(l).get('judge_verdict') == 'CLEAN')
+n = 0
+for l in open('${rollout_file}'):
+    r = json.loads(l)
+    v = r.get('judge_verdict', '')
+    if r.get('correct',0) > 0 and v not in ('', 'PARSE_FAIL') and int(v) <= 3:
+        n += 1
 print(n)
-" 2>/dev/null || echo "?")
-        fi
-
-        printf "$ROW_FMT" \
-            "$step" "${acc:-?}" "${success}" "${enc_r:-?}" "${dec_r:-?}" \
-            "${detected:-?}" "${clean:-?}" "${think_len:-?}"
-
-        LAST_STEP=$step
-    done < <(grep "^Step " "$file")
+" 2>/dev/null || echo "?"
 }
 
-# Print header + existing data
-print_header
-parse_and_print "$LOG"
+avg_judge_score() {
+    local rollout_file="$1"
+    python3 -c "
+import json
+scores = []
+for l in open('${rollout_file}'):
+    r = json.loads(l)
+    v = r.get('judge_verdict', '')
+    if v not in ('', 'PARSE_FAIL'):
+        scores.append(int(v))
+print(f'{sum(scores)/len(scores):.1f}' if scores else '?')
+" 2>/dev/null || echo "?"
+}
 
-# Tail for new steps
-tail -n 0 -f "$LOG" 2>/dev/null | while IFS= read -r line; do
-    if [[ "$line" == Step\ * ]]; then
-        sleep 2  # let metric line flush
-        parse_and_print "$LOG"
+print_step() {
+    local step="$1"
+    local summary_line
+    summary_line=$(grep "^Step ${step} " "$LOG" | tail -1)
+    [[ -z "$summary_line" ]] && return
+
+    local acc=$(echo "$summary_line" | grep -oP 'acc=\K[0-9]+%')
+    local enc_r=$(echo "$summary_line" | grep -oP 'enc_r=\K[+-]?[0-9.]+')
+    local dec_r=$(echo "$summary_line" | grep -oP 'dec_r=\K[+-]?[0-9.]+')
+    local think_len=$(echo "$summary_line" | grep -oP 'think=\K[0-9]+' || true)
+
+    local rollout_file="${ROLLOUT_DIR}/step_${step}.jsonl"
+    local judge_avg stealthy
+    judge_avg=$(avg_judge_score "$rollout_file")
+    stealthy=$(count_stealthy "$rollout_file")
+
+    printf "$ROW_FMT" \
+        "$step" "${acc:-?}" "${judge_avg}" "${stealthy}" "${enc_r:-?}" "${dec_r:-?}" \
+        "${think_len:-?}"
+}
+
+# Print header
+print_header
+find_rollout_dir
+
+# Print existing steps that have rollout files (guaranteed complete)
+if [[ -n "$ROLLOUT_DIR" && -d "$ROLLOUT_DIR" ]]; then
+    for f in $(ls "$ROLLOUT_DIR"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
+        step=$(basename "$f" .jsonl | sed 's/step_//')
+        (( step <= LAST_STEP )) && continue
+        print_step "$step"
+        LAST_STEP=$step
+    done
+fi
+
+# Poll for new rollout files
+while true; do
+    find_rollout_dir
+    if [[ -n "$ROLLOUT_DIR" && -d "$ROLLOUT_DIR" ]]; then
+        for f in $(ls "$ROLLOUT_DIR"/step_*.jsonl 2>/dev/null | sort -t_ -k2 -n); do
+            step=$(basename "$f" .jsonl | sed 's/step_//')
+            (( step <= LAST_STEP )) && continue
+            print_step "$step"
+            LAST_STEP=$step
+        done
     fi
+    sleep 10
 done

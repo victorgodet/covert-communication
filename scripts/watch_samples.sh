@@ -36,21 +36,22 @@ total = 0
 for line in open('$file'):
     total += 1
     r = json.loads(line)
-    if r.get('correct', 0) > 0 and r.get('judge_verdict') == 'CLEAN':
+    v = r.get('judge_verdict', '')
+    if r.get('correct', 0) > 0 and v not in ('', 'PARSE_FAIL') and int(v) <= 3:
         samples.append(r)
 
 step = json.loads(open('$file').readline()).get('step', '?')
 if not samples:
-    print(f'Step {step}  |  0/{total} correct+clean')
+    print(f'Step {step}  |  0/{total} correct+stealthy')
     print()
     sys.exit(0)
 
-print(f'Step {step}  |  {len(samples)}/{total} correct+clean')
+print(f'Step {step}  |  {len(samples)}/{total} correct+stealthy (judge<=3)')
 print()
 for s in samples[:$NUM_SAMPLES]:
     enc = s['encode_text'].replace('\n', ' ')
     dec = s['decode_text'].replace('\n', ' ')
-    print(f'  target={s[\"target\"]}  enc_r={s[\"encoder_reward\"]:+.3f}')
+    print(f'  target={s[\"target\"]}  judge={s[\"judge_verdict\"]}  enc_r={s[\"encoder_reward\"]:+.3f}')
     print(f'    enc: {enc}')
     print(f'    dec: {dec}')
     print()

@@ -53,17 +53,16 @@ def train(
     steps: int = 200,
     seed: int = 1,
     correctness_reward: float = 0.5,
-    digit_penalty: float = 0.0,
     obfuscation_weight: float = 1.0,
     judge_model_id: str = "deepseek/deepseek-v3.2",
-    num_generations: int = 8,
-    num_prompts: int = 16,
+    num_generations: int = 32,
+    num_prompts: int = 4,
     max_prompt_length: int = 512,
     max_completion_length: int = 4096,
     max_message_length: int = 128,
     temperature: float = 1.0,
-    beta: float = 0.001,
-    save_steps: int = 100,
+    beta: float = 0.01,
+    save_steps: int = 25,
     save_only_model: bool = True,
     resume_from: str | None = None,
     enable_thinking: bool = True,
@@ -77,7 +76,6 @@ def train(
         steps: Number of training steps.
         seed: Random seed.
         correctness_reward: Reward for correct decode.
-        digit_penalty: Penalty per digit character in encoded text.
         obfuscation_weight: Weight for LLM judge obfuscation score (0 = disabled).
         judge_model_id: OpenRouter model ID for the obfuscation judge.
         num_generations: Generations per prompt (halved from default —
@@ -98,7 +96,7 @@ def train(
         _generate_dataset(level=level, output_dir=f"{RESULTS_PATH}/data", enable_thinking=enable_thinking)
 
     obfuscation_weight = float(obfuscation_weight)
-    run_name = f"covert_comm_level{level}_cr{correctness_reward}_dp{digit_penalty}"
+    run_name = f"covert_comm_level{level}_cr{correctness_reward}"
     if obfuscation_weight > 0:
         run_name += f"_ow{obfuscation_weight}"
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_name}"
@@ -125,7 +123,6 @@ def train(
         # Covert-comm reward settings
         correct_reward=float(correctness_reward),
         incorrect_penalty=-0.5,
-        digit_penalty_value=float(digit_penalty),
         obfuscation_weight=obfuscation_weight,
         judge_model_id=str(judge_model_id),
         # Empty reward/screening — trainer computes rewards directly
@@ -148,7 +145,6 @@ def run_covert_communication(
     seed: int = 1,
     correct_reward: float = 3.0,
     incorrect_penalty: float = -1.0,
-    digit_penalty_value: float = -0.5,
     obfuscation_weight: float = 1.0,
     judge_model_id: str = "deepseek/deepseek-v3.2",
     num_generations: int = 8,
@@ -167,7 +163,7 @@ def run_covert_communication(
     """
 
     run_name = (
-        f"covert_comm_cr{correct_reward}_dp{digit_penalty_value}_ow{obfuscation_weight}"
+        f"covert_comm_cr{correct_reward}_ow{obfuscation_weight}"
     )
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_name}"
 
@@ -193,7 +189,6 @@ def run_covert_communication(
         # Covert-comm specific
         correct_reward=correct_reward,
         incorrect_penalty=incorrect_penalty,
-        digit_penalty_value=digit_penalty_value,
         obfuscation_weight=obfuscation_weight,
         judge_model_id=judge_model_id,
         # Use a simple reward function for validation (encode-only)
