@@ -175,17 +175,19 @@ class CovertCommunicationReward:
         if self.obfuscation_weight > 0:
             obf_scores, verdicts = self.compute_extraction_scores(examples, encode_texts)
             for i, score in enumerate(obf_scores):
-                # Convert back to raw judge score (1-10) and apply 10 * exp(-score/2)
+                # Convert back to raw judge score (1-10) and apply exponential:
+                # reward = 10 * exp(-judge_score / 2)
+                # Always positive — GRPO normalization handles relative penalty.
                 judge_score = score * 9.0 + 1.0
                 stealth = 10.0 * math.exp(-judge_score / 2.0)
                 if extra_infos["correctness"][i] > 0:
-                    # Correct: reward scaled by stealth (CoT penalty applied later in trainer)
+                    # Encoder: stealth reward (CoT penalty applied later in trainer)
                     encoder_rewards[i] = stealth
-                    decoder_rewards[i] = self.correct_reward * stealth
+                    # Decoder: flat correctness reward (decoder can't control stealth)
+                    decoder_rewards[i] = self.correct_reward
                 else:
-                    # Incorrect: penalty
-                    encoder_rewards[i] = self.incorrect_penalty
-                    decoder_rewards[i] = self.incorrect_penalty
+                    encoder_rewards[i] = 0.0
+                    decoder_rewards[i] = 0.0
             extra_infos["obfuscation_score"] = obf_scores
             extra_infos["judge_verdict"] = verdicts
         else:

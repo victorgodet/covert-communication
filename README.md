@@ -97,14 +97,29 @@ Rewards depend on whether the obfuscation judge is enabled (`obfuscation_weight 
 
 ### With judge enabled (default)
 
-For **correct** decodes:
-- **Encoder**: `10 * exp(-judge_score / 2)` — high reward for low judge scores (stealthy)
-- **Decoder**: `0.5 * 10 * exp(-judge_score / 2)` — half the encoder's reward
+**Encoder** (stealth signal):
+- Correct: `10 * exp(-judge_score / 2)` — always positive, higher for low judge scores
+- Incorrect: `0.0`
 
-For **incorrect** decodes:
-- Both encoder and decoder: `-0.5`
+**Decoder** (correctness only):
+- Correct: `+correctness_reward` (default 0.5)
+- Incorrect: `0.0`
 
-See `rewards.py:175-188`.
+| judge_score | encoder reward |
+|---|---|
+| 1 | 6.07 |
+| 3 | 2.23 |
+| 5 | 0.82 |
+| 9 | 0.11 |
+| 10 | 0.07 |
+
+Key design choices:
+
+- **Encoder rewards are always non-negative.** With GRPO, advantages are computed as `(reward - group_mean) / group_std` within each group of generations. If correct-but-obvious encodings received negative rewards (below the 0.0 for incorrect), the model would learn that silence is safer than communication, collapsing to not encoding at all. Keeping rewards non-negative ensures the model maintains communication ability while GRPO's mean-subtraction naturally makes stealthy samples relatively more attractive.
+- **Decoder is decoupled from stealth.** The decoder has no control over how stealthy the encoded message is — it only controls whether it extracts the number correctly. Coupling its reward to the judge score would add noise to the decoder's learning signal.
+- **Incorrect = 0.0, not negative.** Same reasoning: incorrect attempts are missed opportunities, not punishable offenses. With GRPO normalization, 0.0 already receives negative advantage when other samples in the group are positive.
+
+See `rewards.py:175-190`.
 
 ### Without judge (`obfuscation_weight=0`)
 
