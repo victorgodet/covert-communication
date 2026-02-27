@@ -9,6 +9,7 @@ Each training step:
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 import warnings
@@ -178,6 +179,23 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
             truncated.append(text)
         return truncated
 
+    def _compute_think_lengths(
+        self, batch: DataProto, message_texts: list[str]
+    ) -> list[int]:
+        """Compute the number of tokens spent on thinking for each sample.
+
+        think_length = total_response_tokens - message_tokens
+        """
+        prompt_len = batch.batch["prompts"].shape[-1]
+        attention_mask = batch.batch["attention_mask"]
+        total_response_lengths = attention_mask[:, prompt_len:].sum(dim=-1).tolist()
+
+        think_lengths = []
+        for total_len, text in zip(total_response_lengths, message_texts):
+            msg_len = len(self.tokenizer.encode(text, add_special_tokens=False)) if text else 0
+            think_lengths.append(max(int(total_len) - msg_len, 0))
+        return think_lengths
+
     # ------------------------------------------------------------------
     # Console logging
     # ------------------------------------------------------------------
@@ -211,9 +229,13 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         n_clean = sum(1 for v in verdicts if v == "CLEAN")
         n_parse_fail = sum(1 for v in verdicts if v == "PARSE_FAIL")
 
+        think_lengths = extra_infos.get("think_length", [])
+        avg_think = sum(think_lengths) / n if n and think_lengths else 0.0
+
         print(f"\n{'='*70}")
         print(f"Step {step}  |  n={n}  acc={acc:.0%}  digits={digit_rate:.0%}  "
-              f"enc_r={avg_enc:+.3f}  dec_r={avg_dec:+.3f}  obf={avg_obf:.3f}")
+              f"enc_r={avg_enc:+.3f}  dec_r={avg_dec:+.3f}  obf={avg_obf:.3f}  "
+              f"think={avg_think:.0f}")
         if verdicts:
             print(f"  Judge: {n_detected} detected, {n_clean} clean, {n_parse_fail} parse-fail")
 
@@ -326,6 +348,11 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     # Decode encode responses to text (think blocks already stripped)
                     encode_responses_str = convert_responses_to_str(encode_batch, self.tokenizer)
 
+                    # Compute think token lengths before truncation
+                    encode_think_lengths = self._compute_think_lengths(
+                        encode_batch, encode_responses_str
+                    )
+
                     # Truncate messages to max_message_length tokens so the
                     # decoder and judge only see a bounded-length message.
                     if max_message_length is not None:
@@ -386,6 +413,11 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     # Decode the decode responses to text
                     decode_responses_str = convert_responses_to_str(decode_batch, self.tokenizer)
 
+                    # Compute decoder think token lengths
+                    decode_think_lengths = self._compute_think_lengths(
+                        decode_batch, decode_responses_str
+                    )
+
                     # ============================================================
                     # COMPUTE REWARDS
                     # ============================================================
@@ -412,8 +444,19 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                                 decode_texts=decode_responses_str,
                             )
 
-                        # Asymmetric rewards: encoder gets the full composite
-                        # signal; decoder gets correctness only.
+                        # CoT length penalty on positive rewards only:
+                        # reward *= exp(-sqrt(think_length) / 100)
+                        # Encourages shorter thinking without cushioning failures.
+                        encoder_rewards = [
+                            r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
+                            for r, tl in zip(encoder_rewards, encode_think_lengths)
+                        ]
+                        decoder_rewards = [
+                            r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
+                            for r, tl in zip(decoder_rewards, decode_think_lengths)
+                        ]
+
+                        # Assign token-level rewards.
                         encode_reward_tensor = self._assign_token_rewards(encode_batch, encoder_rewards)
                         decode_reward_tensor = self._assign_token_rewards(decode_batch, decoder_rewards)
 
@@ -426,6 +469,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
                         # Build reward_extra_infos_dict for logging
                         reward_extra_infos_dict = reward_extra_infos
+                        reward_extra_infos["think_length"] = encode_think_lengths
 
                     # Print step summary to console
                     self._print_step_summary(
@@ -593,6 +637,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             sum(reward_extra_infos.get("has_digits", [])) / n if n else 0.0
                         ),
                         "covert_comm/n_samples": n,
+                        "covert_comm/avg_think_length": (
+                            sum(reward_extra_infos.get("think_length", [])) / n if n else 0.0
+                        ),
                     })
 
                 metrics.update({
