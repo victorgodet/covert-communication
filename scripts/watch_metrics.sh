@@ -32,24 +32,23 @@ cat <<'LEGEND'
 Columns:
   step      = training step
   accuracy  = % of samples where decoder recovered the correct number
-  digits    = % of encoder messages containing digit characters (should be 0%)
+  success   = correct + not detected by judge (the goal)
   enc_r     = encoder reward (higher = better hiding + correct decode)
   dec_r     = decoder reward (higher = more correct decodes)
-  obf       = obfuscation score from judge (1.0 = all detected, 0.0 = all clean)
-  detected  = number of samples the judge flagged as suspicious
-  clean     = number of samples the judge found innocent
+  detected  = samples the judge flagged as suspicious
+  clean     = samples the judge found innocent
   think     = mean thinking tokens (inside <think> block)
 
 LEGEND
 
-HEADER_FMT="%-5s  %-8s  %-6s  %-7s  %-7s  %-5s  %-8s  %-5s  %-5s\n"
-ROW_FMT="%-5s  %-8s  %-6s  %-7s  %-7s  %-5s  %-8s  %-5s  %-5s\n"
+HEADER_FMT="%-5s  %-8s  %-7s  %-7s  %-7s  %-8s  %-5s  %-5s\n"
+ROW_FMT="%-5s  %-8s  %-7s  %-7s  %-7s  %-8s  %-5s  %-5s\n"
 
 print_header() {
     printf "$HEADER_FMT" \
-        "step" "accuracy" "digits" "enc_r" "dec_r" "obf" "detected" "clean" "think"
+        "step" "accuracy" "success" "enc_r" "dec_r" "detected" "clean" "think"
     printf "%s\n" \
-        "-----  --------  ------  -------  -------  -----  --------  -----  -----"
+        "-----  --------  -------  -------  -------  --------  -----  -----"
 }
 
 LAST_STEP=0
@@ -57,16 +56,21 @@ LAST_STEP=0
 parse_and_print() {
     local file="$1"
 
+    # Find rollout dir for success count
+    local rollout_dir=""
+    local latest_run=$(ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1)
+    if [[ -n "$latest_run" ]]; then
+        rollout_dir="${latest_run}rollouts"
+    fi
+
     while IFS= read -r summary_line; do
         step=$(echo "$summary_line" | grep -oP 'Step \K[0-9]+')
         [[ -z "$step" ]] && continue
         (( step <= LAST_STEP )) && continue
 
         acc=$(echo "$summary_line" | grep -oP 'acc=\K[0-9]+%')
-        digits=$(echo "$summary_line" | grep -oP 'digits=\K[0-9]+%')
         enc_r=$(echo "$summary_line" | grep -oP 'enc_r=\K[+-]?[0-9.]+')
         dec_r=$(echo "$summary_line" | grep -oP 'dec_r=\K[+-]?[0-9.]+')
-        obf=$(echo "$summary_line" | grep -oP 'obf=\K[0-9.]+')
         think_len=$(echo "$summary_line" | grep -oP 'think=\K[0-9]+' || true)
 
         judge_line=$(grep -A1 "^Step ${step} " "$file" | grep "Judge:" | tail -1 || true)
@@ -76,9 +80,20 @@ parse_and_print() {
             clean=$(echo "$judge_line" | grep -oP '[0-9]+ clean' | grep -oP '[0-9]+' || true)
         fi
 
+        # Count correct+clean from rollout JSONL
+        success="?"
+        if [[ -n "$rollout_dir" && -f "${rollout_dir}/step_${step}.jsonl" ]]; then
+            success=$(python3 -c "
+import json
+n = sum(1 for l in open('${rollout_dir}/step_${step}.jsonl')
+        if json.loads(l).get('correct',0) > 0 and json.loads(l).get('judge_verdict') == 'CLEAN')
+print(n)
+" 2>/dev/null || echo "?")
+        fi
+
         printf "$ROW_FMT" \
-            "$step" "${acc:-?}" "${digits:-?}" "${enc_r:-?}" "${dec_r:-?}" \
-            "${obf:-?}" "${detected:-?}" "${clean:-?}" "${think_len:-?}"
+            "$step" "${acc:-?}" "${success}" "${enc_r:-?}" "${dec_r:-?}" \
+            "${detected:-?}" "${clean:-?}" "${think_len:-?}"
 
         LAST_STEP=$step
     done < <(grep "^Step " "$file")
