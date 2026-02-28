@@ -64,7 +64,7 @@ CURRENT_RUN=""
 LAST_STEP=0
 
 find_latest_run() {
-    ls -dt results/runs/qwen3-4b/*/ 2>/dev/null | head -1
+    ls -dt results/runs/*/*/ 2>/dev/null | head -1
 }
 
 print_header
