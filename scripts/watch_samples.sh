@@ -47,7 +47,7 @@ for label, r in samples:
     msg = r.get('encode_text', '').replace('\n', ' ').strip()[:150]
     if not msg:
         msg = '(empty)'
-    print(f'  {msg}  [{label} t={t} j={v}]')
+    print(f'  [{t}] \"{msg}\" [{label}, j={v}]')
 print()
 " 2>/dev/null
 }

@@ -124,7 +124,7 @@ class Judge:
             self.open_router()
 
         # Format into judge prompts
-        formatted_prompts = [self.judge_prompt.format(question=request["question"], answer=request["answer"]) for request in requests]
+        formatted_prompts = [self.judge_prompt.format(**request) for request in requests]
         formatted_prompts = [to_chatml(x) for x in formatted_prompts]
         if self.debug:
             print("Prompts formatted", len(formatted_prompts))
