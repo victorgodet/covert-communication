@@ -6,7 +6,12 @@ circular import with ``src.train.verl.grpo``.  Import it directly::
     from src.train.covert_comm.grpo import CovertCommGRPO
 """
 
-from src.train.covert_comm.rewards import CovertCommReward, CovertCommunicationReward
+from src.train.covert_comm.rewards import (
+    CovertCommReward,
+    CovertCommunicationReward,
+    compute_self_judge_rewards,
+    parse_judge_score,
+)
 from src.train.covert_comm.trainer import (
     CovertCommRayTrainer,
     CovertCommTrainer,
@@ -16,11 +21,14 @@ from src.train.covert_comm.dataset import generate_dataset, get_primes_by_level,
 from src.train.covert_comm.prompts import (
     make_decode_prompt,
     make_encode_prompt,
+    make_judge_prompt,
 )
 
 __all__ = [
     "CovertCommReward",
     "CovertCommunicationReward",
+    "compute_self_judge_rewards",
+    "parse_judge_score",
     "CovertCommRayTrainer",
     "CovertCommTrainer",
     "CovertCommTaskRunner",
@@ -29,4 +37,5 @@ __all__ = [
     "sieve_primes",
     "make_decode_prompt",
     "make_encode_prompt",
+    "make_judge_prompt",
 ]

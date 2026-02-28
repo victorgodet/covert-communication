@@ -25,6 +25,98 @@ def extract_first_number(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def parse_judge_score(text: str) -> float:
+    """Extract a 1-10 judge score from response text.
+
+    Handles thinking-mode output where the score follows a ``</think>`` block.
+    Returns the raw judge score (1-10), or 5.0 as a neutral fallback if parsing
+    fails.
+    """
+    if not isinstance(text, str):
+        return 5.0
+    # Strip think block if present
+    think_end = text.find("</think>")
+    if think_end >= 0:
+        text = text[think_end + len("</think>"):]
+    match = re.search(r"\b(10|[1-9])\b", text.strip())
+    if match:
+        return float(int(match.group(1)))
+    return 5.0
+
+
+def _extract_target(example: dict) -> str:
+    """Extract the target number from a dataset example."""
+    if "prime" in example:
+        return str(example["prime"])
+    md = example.get("prompt_metadata", {})
+    if isinstance(md, dict) and "target_number" in md:
+        return str(md["target_number"])
+    return str(example.get("gt_answer", ""))
+
+
+def compute_self_judge_rewards(
+    encode_texts: list[str],
+    decode_texts: list[str],
+    judge_scores: list[float],
+    examples: list[dict],
+    correct_reward: float = 0.5,
+) -> tuple[list[float], list[float], list[float], dict]:
+    """Compute rewards for all three roles in self-play judge mode.
+
+    The judge score represents ``10 * P(decode success)`` as estimated by
+    the judge.  The judge is rewarded for **calibration** using a Brier
+    score: ``1 - (p - outcome)^2``, which is a proper scoring rule that
+    incentivises accurate probability estimation.  Always saying "10"
+    gets punished when decoding fails.
+
+    Args:
+        encode_texts: Encoded message texts.
+        decode_texts: Decoded response texts.
+        judge_scores: Raw 1-10 scores from self-judge.
+        examples: Dataset examples (for extracting target numbers).
+        correct_reward: Flat decoder reward for correct decodes.
+
+    Returns:
+        ``(encoder_rewards, decoder_rewards, judge_rewards, extra_infos)``
+    """
+    encoder_rewards: list[float] = []
+    decoder_rewards: list[float] = []
+    judge_rewards: list[float] = []
+    extra_infos: dict[str, list] = defaultdict(list)
+
+    for enc, dec, js, example in zip(encode_texts, decode_texts, judge_scores, examples):
+        target = _extract_target(example)
+        decoded_num = extract_first_number(dec)
+        is_correct = decoded_num == target
+
+        # Judge: Brier-score calibration reward (always applied)
+        p = js / 10.0  # judge's estimated P(decode success)
+        outcome = 1.0 if is_correct else 0.0
+        j_r = 1.0 - (p - outcome) ** 2
+
+        if is_correct:
+            # Encoder: stealth reward — higher reward for lower judge scores
+            enc_r = 10.0 * math.exp(-js / 2.0)
+            # Decoder: flat correctness reward
+            dec_r = correct_reward
+        else:
+            enc_r = 0.0
+            dec_r = 0.0
+
+        encoder_rewards.append(enc_r)
+        decoder_rewards.append(dec_r)
+        judge_rewards.append(j_r)
+        extra_infos["correctness"].append(float(is_correct))
+        extra_infos["decoded_value"].append(decoded_num or "")
+        extra_infos["target"].append(target)
+        # Store normalized obfuscation score (0-1) for compatibility with logging
+        extra_infos["obfuscation_score"].append((js - 1.0) / 9.0)
+        extra_infos["judge_verdict"].append(str(int(js)))
+        extra_infos["self_judge_score"].append(js)
+
+    return encoder_rewards, decoder_rewards, judge_rewards, dict(extra_infos)
+
+
 class CovertCommReward:
     """Lightweight reward computer for covert-communication training.
 

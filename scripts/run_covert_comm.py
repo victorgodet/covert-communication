@@ -55,6 +55,7 @@ def train(
     correctness_reward: float = 0.5,
     obfuscation_weight: float = 1.0,
     judge_model_id: str = "deepseek/deepseek-v3.2",
+    judge_mode: str = "external",
     num_generations: int = 32,
     num_prompts: int = 8,
     max_prompt_length: int = 512,
@@ -78,6 +79,7 @@ def train(
         correctness_reward: Reward for correct decode.
         obfuscation_weight: Weight for LLM judge obfuscation score (0 = disabled).
         judge_model_id: OpenRouter model ID for the obfuscation judge.
+        judge_mode: "external" for LLM judge via OpenRouter, "self" for self-play judge.
         num_generations: Generations per prompt (halved from default —
             two generate calls per step).
         num_prompts: Number of prompts per batch.
@@ -96,8 +98,11 @@ def train(
         _generate_dataset(level=level, output_dir=f"{RESULTS_PATH}/data", enable_thinking=enable_thinking)
 
     obfuscation_weight = float(obfuscation_weight)
+    judge_mode = str(judge_mode)
     run_name = f"covert_comm_level{level}_cr{correctness_reward}"
-    if obfuscation_weight > 0:
+    if judge_mode == "self":
+        run_name += "_selfjudge"
+    elif obfuscation_weight > 0:
         run_name += f"_ow{obfuscation_weight}"
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_name}"
 
@@ -125,6 +130,7 @@ def train(
         incorrect_penalty=-0.5,
         obfuscation_weight=obfuscation_weight,
         judge_model_id=str(judge_model_id),
+        judge_mode=judge_mode,
         # Empty reward/screening — trainer computes rewards directly
         reward_funcs_kwargs={},
         screening_funcs_kwargs={},

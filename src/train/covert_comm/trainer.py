@@ -45,8 +45,13 @@ import verl.utils.torch_functional as verl_F
 
 from src.train.verl.trainer import RHGRPORayTrainer, compute_advantage
 from src.train.verl.utils import convert_responses_to_str
-from src.train.covert_comm.rewards import CovertCommunicationReward, CovertCommReward
-from src.train.covert_comm.prompts import make_decode_prompt
+from src.train.covert_comm.rewards import (
+    CovertCommunicationReward,
+    CovertCommReward,
+    compute_self_judge_rewards,
+    parse_judge_score,
+)
+from src.train.covert_comm.prompts import make_decode_prompt, make_judge_prompt
 from src.utils import get_logger
 
 logger = get_logger()
@@ -89,6 +94,34 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                 content = template.format(encoded_text=enc_text)
                 prompts.append([{"role": "user", "content": content}])
         return prompts
+
+    def _build_judge_prompts(
+        self,
+        examples: list[dict],
+        encode_responses_str: list[str],
+    ) -> list[list[dict]]:
+        """Build chat-format judge prompts from encode outputs.
+
+        Returns a list of chat messages (one per sample) suitable for
+        tokenization via ``tokenizer.apply_chat_template``.
+        """
+        chat_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
+        thinking = chat_kwargs.get("enable_thinking", False)
+        prompts = []
+        for example, enc_text in zip(examples, encode_responses_str):
+            metadata = example.get("prompt_metadata", {})
+            if isinstance(metadata, dict) and "target_number" in metadata:
+                target = int(metadata["target_number"])
+            elif "prime" in example:
+                target = int(example["prime"])
+            else:
+                target = int(example.get("gt_answer", 0))
+            prompts.append(make_judge_prompt(enc_text, target, enable_thinking=thinking))
+        return prompts
+
+    def _parse_judge_scores(self, judge_responses_str: list[str]) -> list[float]:
+        """Extract 1-10 scores from judge response texts."""
+        return [parse_judge_score(text) for text in judge_responses_str]
 
     def _tokenize_decode_prompts(
         self,
@@ -325,6 +358,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
             )
             use_lightweight_reward = False
 
+        # Self-play judge mode
+        self.judge_mode = covert_reward_cfg.get("judge_mode", "external")
+
         n_gen = self.config.actor_rollout_ref.rollout.n  # num_generations per prompt
         max_prompt_length = self.config.data.max_prompt_length
         max_message_length = covert_reward_cfg.get("max_message_length", None)
@@ -449,10 +485,76 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     )
 
                     # ============================================================
+                    # PHASE 3: JUDGE generation (self-play mode only)
+                    # ============================================================
+                    judge_batch = None
+                    judge_responses_str = None
+                    judge_scores = None
+                    judge_think_lengths = None
+
+                    if self.judge_mode == "self":
+                        with marked_timer("judge_gen", timing_raw, color="cyan"):
+                            # Build judge prompts from encode outputs
+                            judge_chat_prompts = self._build_judge_prompts(
+                                encode_extra_infos, encode_responses_str
+                            )
+                            judge_gen_batch = self._tokenize_decode_prompts(
+                                judge_chat_prompts, max_prompt_length
+                            )
+                            judge_gen_batch.meta_info["global_steps"] = self.global_steps
+
+                            judge_gen_output = self.actor_rollout_wg.generate_sequences(judge_gen_batch)
+                            timing_raw.update(judge_gen_output.meta_info.get("timing", {}))
+                            judge_gen_output.meta_info.pop("timing", None)
+
+                        # Build judge_batch
+                        judge_batch = judge_gen_output
+
+                        if "response_mask" not in judge_batch.batch.keys():
+                            judge_batch.batch["response_mask"] = compute_response_mask(judge_batch)
+
+                        # Copy non_tensor_batch fields from encode_batch
+                        for key in ["data_source", "reward_model", "extra_info"]:
+                            if key in encode_batch.non_tensor_batch:
+                                judge_batch.non_tensor_batch[key] = encode_batch.non_tensor_batch[key].copy()
+
+                        # Set judge UIDs: base_uid + "_judge"
+                        judge_uids = np.array(
+                            [uid.replace("_enc", "_judge") for uid in encode_uids],
+                            dtype=object,
+                        )
+                        judge_batch.non_tensor_batch["uid"] = judge_uids
+
+                        # Decode judge responses to text
+                        judge_responses_str = convert_responses_to_str(judge_batch, self.tokenizer)
+
+                        # Decode full responses for logging
+                        judge_full_responses = self._decode_full_responses(judge_batch)
+
+                        # Compute judge think token lengths
+                        judge_think_lengths = self._compute_think_lengths(
+                            judge_batch, judge_responses_str
+                        )
+
+                        # Parse 1-10 scores from judge responses
+                        judge_scores = self._parse_judge_scores(judge_full_responses)
+
+                    # ============================================================
                     # COMPUTE REWARDS
                     # ============================================================
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        if use_lightweight_reward:
+                        judge_rewards = None
+
+                        if self.judge_mode == "self" and judge_scores is not None:
+                            # Self-play judge: compute rewards for all three roles
+                            encoder_rewards, decoder_rewards, judge_rewards, reward_extra_infos = compute_self_judge_rewards(
+                                encode_texts=encode_responses_str,
+                                decode_texts=decode_responses_str,
+                                judge_scores=judge_scores,
+                                examples=list(encode_extra_infos),
+                                correct_reward=covert_reward_cfg.get("correct_reward", 0.5),
+                            )
+                        elif use_lightweight_reward:
                             # CovertCommReward: takes target_numbers
                             target_numbers = []
                             for ex in encode_extra_infos:
@@ -485,6 +587,11 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
                             for r, tl in zip(decoder_rewards, decode_think_lengths)
                         ]
+                        if judge_rewards is not None and judge_think_lengths is not None:
+                            judge_rewards = [
+                                r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
+                                for r, tl in zip(judge_rewards, judge_think_lengths)
+                            ]
 
                         # Assign token-level rewards.
                         encode_reward_tensor = self._assign_token_rewards(encode_batch, encoder_rewards)
@@ -492,6 +599,13 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
 
                         encode_batch.batch["token_level_scores"] = encode_reward_tensor
                         decode_batch.batch["token_level_scores"] = decode_reward_tensor
+
+                        if judge_batch is not None and judge_rewards is not None:
+                            judge_reward_tensor = self._assign_token_rewards(judge_batch, judge_rewards)
+                            judge_batch.batch["token_level_scores"] = judge_reward_tensor
+                            judge_batch.non_tensor_batch["response"] = np.array(
+                                judge_responses_str, dtype=object
+                            )
 
                         # Store responses as non-tensor for logging/screening
                         encode_batch.non_tensor_batch["response"] = np.array(encode_responses_str, dtype=object)
@@ -513,7 +627,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     )
 
                     # ============================================================
-                    # COMPUTE OLD LOG PROBS (for both batches)
+                    # COMPUTE OLD LOG PROBS (for all batches)
                     # ============================================================
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
                         # Encode batch
@@ -537,11 +651,26 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                         decode_old_lp.batch.pop("entropys")
                         decode_batch = decode_batch.union(decode_old_lp)
 
+                        # Judge batch (self-play mode only)
+                        judge_entropy_agg = None
+                        if judge_batch is not None:
+                            judge_old_lp = self.actor_rollout_wg.compute_log_prob(judge_batch)
+                            judge_entropys = judge_old_lp.batch["entropys"]
+                            judge_response_masks = judge_batch.batch["response_mask"]
+                            judge_entropy_agg = agg_loss(
+                                loss_mat=judge_entropys, loss_mask=judge_response_masks, loss_agg_mode=loss_agg_mode
+                            )
+                            judge_old_lp.batch.pop("entropys")
+                            judge_batch = judge_batch.union(judge_old_lp)
+
                         metrics["actor/entropy_encode"] = encode_entropy_agg.detach().item()
                         metrics["actor/entropy_decode"] = decode_entropy_agg.detach().item()
-                        metrics["actor/entropy"] = (
-                            encode_entropy_agg.detach().item() + decode_entropy_agg.detach().item()
-                        ) / 2.0
+                        if judge_entropy_agg is not None:
+                            metrics["actor/entropy_judge"] = judge_entropy_agg.detach().item()
+                        entropy_values = [encode_entropy_agg.detach().item(), decode_entropy_agg.detach().item()]
+                        if judge_entropy_agg is not None:
+                            entropy_values.append(judge_entropy_agg.detach().item())
+                        metrics["actor/entropy"] = sum(entropy_values) / len(entropy_values)
 
                     # ============================================================
                     # REFERENCE POLICY LOG PROBS (if using KL)
@@ -551,14 +680,20 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             if not self.ref_in_actor:
                                 encode_ref_lp = self.ref_policy_wg.compute_ref_log_prob(encode_batch)
                                 decode_ref_lp = self.ref_policy_wg.compute_ref_log_prob(decode_batch)
+                                if judge_batch is not None:
+                                    judge_ref_lp = self.ref_policy_wg.compute_ref_log_prob(judge_batch)
                             else:
                                 encode_ref_lp = self.actor_rollout_wg.compute_ref_log_prob(encode_batch)
                                 decode_ref_lp = self.actor_rollout_wg.compute_ref_log_prob(decode_batch)
+                                if judge_batch is not None:
+                                    judge_ref_lp = self.actor_rollout_wg.compute_ref_log_prob(judge_batch)
                             encode_batch = encode_batch.union(encode_ref_lp)
                             decode_batch = decode_batch.union(decode_ref_lp)
+                            if judge_batch is not None:
+                                judge_batch = judge_batch.union(judge_ref_lp)
 
                     # ============================================================
-                    # CONCATENATE ENCODE + DECODE → COMBINED BATCH
+                    # CONCATENATE BATCHES → COMBINED BATCH
                     # ============================================================
                     with marked_timer("concat_and_adv", timing_raw, color="brown"):
                         # Apply KL penalty if configured
@@ -573,12 +708,22 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             )
                             metrics.update({f"encode/{k}": v for k, v in enc_kl_metrics.items()})
                             metrics.update({f"decode/{k}": v for k, v in dec_kl_metrics.items()})
+                            if judge_batch is not None:
+                                judge_batch, judge_kl_metrics = apply_kl_penalty(
+                                    judge_batch, kl_ctrl=self.kl_ctrl_in_reward,
+                                    kl_penalty=self.config.algorithm.kl_penalty,
+                                )
+                                metrics.update({f"judge/{k}": v for k, v in judge_kl_metrics.items()})
                         else:
                             encode_batch.batch["token_level_rewards"] = encode_batch.batch["token_level_scores"]
                             decode_batch.batch["token_level_rewards"] = decode_batch.batch["token_level_scores"]
+                            if judge_batch is not None:
+                                judge_batch.batch["token_level_rewards"] = judge_batch.batch["token_level_scores"]
 
                         # Pad tensors to same sequence length before concat
                         combined_batch = self._pad_and_concat(encode_batch, decode_batch)
+                        if judge_batch is not None:
+                            combined_batch = self._pad_and_concat(combined_batch, judge_batch)
 
                         combined_batch.meta_info["global_token_num"] = torch.sum(
                             combined_batch.batch["attention_mask"], dim=-1
@@ -629,6 +774,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             list(encode_extra_infos),
                             encode_full_responses,
                             decode_full_responses,
+                            judge_responses_str=judge_responses_str if self.judge_mode == "self" else None,
+                            judge_rewards=judge_rewards,
                         )
 
                 # Validation
@@ -671,6 +818,14 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             sum(reward_extra_infos.get("think_length", [])) / n if n else 0.0
                         ),
                     })
+                    # Self-judge metrics
+                    if judge_rewards is not None:
+                        metrics["covert_comm/avg_judge_reward"] = sum(judge_rewards) / n if n else 0.0
+                    self_judge_scores = reward_extra_infos.get("self_judge_score", [])
+                    if self_judge_scores:
+                        metrics["covert_comm/avg_self_judge_score"] = (
+                            sum(self_judge_scores) / len(self_judge_scores)
+                        )
 
                 metrics.update({
                     "training/global_step": self.global_steps,
@@ -774,6 +929,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         examples: list[dict],
         encode_full_responses: list[str] | None = None,
         decode_full_responses: list[str] | None = None,
+        judge_responses_str: list[str] | None = None,
+        judge_rewards: list[float] | None = None,
     ):
         """Save rollout data for inspection."""
         os.makedirs(rollout_data_dir, exist_ok=True)
@@ -795,6 +952,13 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     record["encode_full_response"] = encode_full_responses[i]
                 if decode_full_responses is not None:
                     record["decode_full_response"] = decode_full_responses[i]
+                if judge_responses_str is not None and i < len(judge_responses_str):
+                    record["judge_response"] = judge_responses_str[i]
+                if judge_rewards is not None and i < len(judge_rewards):
+                    record["judge_reward"] = judge_rewards[i]
+                self_judge_scores = extra_infos.get("self_judge_score", [])
+                if self_judge_scores and i < len(self_judge_scores):
+                    record["self_judge_score"] = self_judge_scores[i]
                 f.write(json.dumps(record) + "\n")
 
 
@@ -902,11 +1066,18 @@ class CovertCommTaskRunner(TaskRunner):
             train_sampler=train_sampler,
         )
         # Inject the lightweight CovertCommReward only when the LLM judge
-        # is disabled (obfuscation_weight == 0).  When obfuscation_weight > 0
-        # we skip injection so _fit() falls through to
+        # is disabled (obfuscation_weight == 0) and we're not using self-judge.
+        # When obfuscation_weight > 0 we skip injection so _fit() falls through to
         # CovertCommunicationReward which includes the judge.
+        # When judge_mode == "self", the trainer handles rewards internally
+        # via compute_self_judge_rewards.
         cc_cfg = config.get("covert_comm", {})
-        if cc_cfg and float(cc_cfg.get("obfuscation_weight", 0.0)) == 0.0:
+        judge_mode = cc_cfg.get("judge_mode", "external") if cc_cfg else "external"
+        if judge_mode == "self":
+            # Self-judge mode: don't inject lightweight reward — rewards
+            # are computed inside _fit() using the self-judge scores.
+            pass
+        elif cc_cfg and float(cc_cfg.get("obfuscation_weight", 0.0)) == 0.0:
             trainer.covert_comm_reward = CovertCommReward(
                 correctness_reward=cc_cfg.get("correct_reward", 3.0),
             )
