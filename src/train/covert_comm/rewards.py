@@ -459,37 +459,22 @@ class CovertCommunicationReward:
         if self.obfuscation_weight > 0:
             obf_scores, verdicts, reasonings = self.compute_extraction_scores(examples, encode_texts)
 
-            # Raw judge scores for the per-group penalty (1-10, -1 for fails)
-            raw_judge_scores: list[float] = []
             for i, score in enumerate(obf_scores):
                 if verdicts[i] == "PARSE_FAIL":
                     # Judge API failure → zero reward (don't learn from noise)
                     encoder_rewards[i] = 0.0
                     decoder_rewards[i] = 0.0
-                    raw_judge_scores.append(-1.0)
                     continue
-                judge_score = score * 9.0 + 1.0
-                raw_judge_scores.append(judge_score)
+                judge_score = score * 9.0 + 1.0  # 0.0-1.0 → 1-10
                 if extra_infos["correctness"][i] > 0:
-                    # Encoder: flat correctness reward (stealth penalty applied below)
-                    encoder_rewards[i] = self.correct_reward
+                    # Encoder: reward inversely proportional to detectability
+                    # score 1/10 → 1.0, score 5/10 → 0.6, score 10/10 → 0.1
+                    encoder_rewards[i] = (11.0 - judge_score) / 10.0
                     # Decoder: flat correctness reward (decoder can't control stealth)
                     decoder_rewards[i] = self.correct_reward
                 else:
                     encoder_rewards[i] = 0.0
                     decoder_rewards[i] = 0.0
-
-            # Per-group judge score penalty on encoder rewards.
-            # Within each group, relatively higher judge scores (more
-            # detectable) get penalized. This gives gradient even when all
-            # scores are in a narrow band (e.g. all 8-10/10).
-            encoder_rewards = apply_judge_score_penalty(
-                encoder_rewards,
-                raw_judge_scores,
-                examples,
-                extra_infos["correctness"],
-                alpha=self.obfuscation_weight * 0.5,
-            )
 
             extra_infos["obfuscation_score"] = obf_scores
             extra_infos["judge_verdict"] = verdicts
