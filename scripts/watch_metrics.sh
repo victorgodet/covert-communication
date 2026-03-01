@@ -9,24 +9,23 @@ set -euo pipefail
 # Column legend
 cat <<'LEGEND'
 Columns:
-  step      = training step
-  accuracy  = % of samples where decoder recovered the correct number
-  judge     = average judge suspicion score (1=innocent, 10=obvious)
-  stealthy  = correct samples with judge score <= 3
-  enc_r     = encoder reward (higher = better hiding + correct decode)
-  dec_r     = decoder reward (higher = more correct decodes)
-  think     = mean thinking chars (inside <think> block)
+  step    = training step
+  acc     = decode accuracy (correct / total)
+  stealth = stealthy successes / total correct  (correct + judge NO)
+  enc_r   = avg encoder reward   (+5.0 stealth, +0.1 obvious, 0.0 miss)
+  dec_r   = avg decoder reward   (+0.5 correct, 0.0 miss)
+  jdg_r   = avg judge reward     (+0.1 right YES, +5.0 right NO, 0.0 wrong)
+  j_yes   = judge YES rate       (lower = more conservative)
+  j_acc   = judge accuracy       (YES=correct, NO=incorrect)
+  think   = mean thinking chars
 
 LEGEND
 
-HEADER_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-6s\n"
-ROW_FMT="%-5s  %-8s  %-5s  %-8s  %-7s  %-7s  %-6s\n"
-
 print_header() {
-    printf "$HEADER_FMT" \
-        "step" "accuracy" "judge" "stealthy" "enc_r" "dec_r" "think"
+    printf "%-5s  %-5s  %-9s  %-7s  %-7s  %-7s  %-5s  %-5s  %-5s\n" \
+        "step" "acc" "stealth" "enc_r" "dec_r" "jdg_r" "j_yes" "j_acc" "think"
     printf "%s\n" \
-        "-----  --------  -----  --------  -------  -------  ------"
+        "-----  -----  ---------  -------  -------  -------  -----  -----  -----"
 }
 
 print_step_from_rollout() {
@@ -41,13 +40,45 @@ if n == 0:
 step = records[0].get('step', '?')
 n_correct = sum(1 for r in records if r.get('correct', 0) > 0)
 acc = f'{n_correct*100//n}%'
+
 avg_enc_r = sum(r['encoder_reward'] for r in records) / n
 avg_dec_r = sum(r['decoder_reward'] for r in records) / n
 
-judge_scores = [int(r['judge_verdict']) for r in records if r.get('judge_verdict') not in ('', 'PARSE_FAIL', None)]
-avg_judge = f'{sum(judge_scores)/len(judge_scores):.1f}' if judge_scores else '?'
-n_stealthy = sum(1 for s in judge_scores if s <= 3)
-stealthy_str = f'{n_stealthy}/{n}'
+# Judge reward (may not exist in old rollouts)
+jdg_rewards = [r['judge_reward'] for r in records if 'judge_reward' in r]
+jdg_r_str = f'{sum(jdg_rewards)/len(jdg_rewards):+.2f}' if jdg_rewards else '  -'
+
+# Detect format: binary YES/NO or numeric 1-10
+verdicts = [r.get('judge_verdict', '') for r in records]
+has_binary = any(v in ('YES', 'NO') for v in verdicts)
+
+if has_binary:
+    n_yes = sum(1 for v in verdicts if v == 'YES')
+    j_yes_str = f'{n_yes*100//n}%'
+
+    # Stealth = correct + judge said NO
+    n_stealth = sum(1 for r in records
+                    if r.get('correct', 0) > 0 and r.get('judge_verdict') == 'NO')
+    stealth_str = f'{n_stealth}/{n_correct}' if n_correct else '0/0'
+
+    # Judge accuracy
+    n_jacc = sum(1 for r in records
+                 if (r.get('judge_verdict') == 'YES') == (r.get('correct', 0) > 0))
+    j_acc_str = f'{n_jacc*100//n}%'
+else:
+    # Old numeric format: approximate stealth as judge <= 3
+    judge_scores = [int(v) for v in verdicts if v not in ('', 'PARSE_FAIL', None)]
+    if judge_scores:
+        n_low = sum(1 for r in records
+                    if r.get('correct', 0) > 0
+                    and r.get('judge_verdict', '') not in ('', 'PARSE_FAIL', None)
+                    and int(r['judge_verdict']) <= 3)
+        stealth_str = f'{n_low}/{n_correct}'
+        j_yes_str = f'{sum(judge_scores)/len(judge_scores):.0f}/10'
+    else:
+        stealth_str = '-'
+        j_yes_str = '-'
+    j_acc_str = '-'
 
 think_lens = []
 for r in records:
@@ -56,7 +87,7 @@ for r in records:
     think_lens.append(len(m.group(1)) if m else 0)
 avg_think = f'{sum(think_lens)//len(think_lens)}' if think_lens else '?'
 
-print(f'{step:<5}  {acc:<8}  {avg_judge:<5}  {stealthy_str:<8}  {avg_enc_r:<+7.3f}  {avg_dec_r:<+7.3f}  {avg_think:<6}')
+print(f'{step:<5}  {acc:<5}  {stealth_str:<9}  {avg_enc_r:<+7.2f}  {avg_dec_r:<+7.2f}  {jdg_r_str:<7}  {j_yes_str:<5}  {j_acc_str:<5}  {avg_think:<5}')
 " 2>/dev/null || true
 }
 

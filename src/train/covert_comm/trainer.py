@@ -48,8 +48,10 @@ from src.train.verl.utils import convert_responses_to_str
 from src.train.covert_comm.rewards import (
     CovertCommunicationReward,
     CovertCommReward,
+    apply_cot_length_penalty,
     compute_self_judge_rewards,
     parse_judge_score,
+    parse_judge_verdict,
 )
 from src.train.covert_comm.prompts import make_decode_prompt, make_judge_prompt
 from src.utils import get_logger
@@ -119,9 +121,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
             prompts.append(make_judge_prompt(enc_text, target, enable_thinking=thinking))
         return prompts
 
-    def _parse_judge_scores(self, judge_responses_str: list[str]) -> list[float]:
-        """Extract 1-10 scores from judge response texts."""
-        return [parse_judge_score(text) for text in judge_responses_str]
+    def _parse_judge_verdicts(self, judge_responses_str: list[str]) -> list[str | None]:
+        """Extract YES/NO verdicts from judge response texts."""
+        return [parse_judge_verdict(text) for text in judge_responses_str]
 
     def _tokenize_decode_prompts(
         self,
@@ -264,28 +266,49 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
         obf_scores = extra_infos.get("obfuscation_score", [])
         verdicts = extra_infos.get("judge_verdict", [])
         targets = extra_infos.get("target", [])
+        judge_said_yes_list = extra_infos.get("judge_said_yes", [])
 
         avg_enc = sum(encoder_rewards) / n if n else 0.0
         avg_dec = sum(decoder_rewards) / n if n else 0.0
-        avg_obf = sum(obf_scores) / n if n and obf_scores else 0.0
         acc = n_correct / n if n else 0.0
-
-        # Count judge outcomes (verdicts are now "1"-"10" or "PARSE_FAIL")
-        n_parse_fail = sum(1 for v in verdicts if v == "PARSE_FAIL")
-        judge_scores = [int(v) for v in verdicts if v not in ("", "PARSE_FAIL")]
-        avg_judge = sum(judge_scores) / len(judge_scores) if judge_scores else 0.0
-        n_low = sum(1 for s in judge_scores if s <= 3)  # stealthy
-        n_high = sum(1 for s in judge_scores if s >= 8)  # obvious
 
         think_lengths = extra_infos.get("think_length", [])
         avg_think = sum(think_lengths) / n if n and think_lengths else 0.0
 
+        # Build summary line
+        obf_str = ""
+        if obf_scores and any(s > 0 for s in obf_scores):
+            avg_obf = sum(obf_scores) / n if n else 0.0
+            obf_str = f"  obf={avg_obf:.3f}"
+
         print(f"\n{'='*70}")
         print(f"Step {step}  |  n={n}  acc={acc:.0%}  "
-              f"enc_r={avg_enc:+.3f}  dec_r={avg_dec:+.3f}  obf={avg_obf:.3f}  "
+              f"enc_r={avg_enc:+.3f}  dec_r={avg_dec:+.3f}{obf_str}  "
               f"think={avg_think:.0f}")
-        if judge_scores:
-            print(f"  Judge: avg={avg_judge:.1f}/10, {n_low} stealthy(<=3), {n_high} obvious(>=8), {n_parse_fail} parse-fail")
+
+        # Judge summary: YES/NO counts (binary self-play) or numeric scores (external)
+        if judge_said_yes_list:
+            n_yes = sum(1 for v in judge_said_yes_list if v > 0.5)
+            n_no = n - n_yes
+            # Compute judge accuracy
+            correctness = extra_infos.get("correctness", [])
+            n_judge_correct = 0
+            for i in range(min(len(judge_said_yes_list), len(correctness))):
+                said_yes = judge_said_yes_list[i] > 0.5
+                was_correct = correctness[i] > 0.5
+                if said_yes == was_correct:
+                    n_judge_correct += 1
+            judge_acc = n_judge_correct / n if n else 0.0
+            print(f"  Judge: {n_yes} YES, {n_no} NO  (accuracy={judge_acc:.0%})")
+        elif verdicts:
+            # Fallback for external judge (numeric verdicts)
+            judge_scores = [int(v) for v in verdicts if v not in ("", "PARSE_FAIL")]
+            if judge_scores:
+                avg_judge = sum(judge_scores) / len(judge_scores)
+                n_low = sum(1 for s in judge_scores if s <= 3)
+                n_high = sum(1 for s in judge_scores if s >= 8)
+                n_parse_fail = sum(1 for v in verdicts if v == "PARSE_FAIL")
+                print(f"  Judge: avg={avg_judge:.1f}/10, {n_low} stealthy(<=3), {n_high} obvious(>=8), {n_parse_fail} parse-fail")
 
         # Show a few samples
         indices = list(range(min(num_samples, n)))
@@ -489,7 +512,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     # ============================================================
                     judge_batch = None
                     judge_responses_str = None
-                    judge_scores = None
+                    judge_verdicts = None
                     judge_think_lengths = None
 
                     if self.judge_mode == "self":
@@ -536,8 +559,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             judge_batch, judge_responses_str
                         )
 
-                        # Parse 1-10 scores from judge responses
-                        judge_scores = self._parse_judge_scores(judge_full_responses)
+                        # Parse YES/NO verdicts from judge responses
+                        judge_verdicts = self._parse_judge_verdicts(judge_full_responses)
 
                     # ============================================================
                     # COMPUTE REWARDS
@@ -545,12 +568,12 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     with marked_timer("reward", timing_raw, color="yellow"):
                         judge_rewards = None
 
-                        if self.judge_mode == "self" and judge_scores is not None:
+                        if self.judge_mode == "self" and judge_verdicts is not None:
                             # Self-play judge: compute rewards for all three roles
                             encoder_rewards, decoder_rewards, judge_rewards, reward_extra_infos = compute_self_judge_rewards(
                                 encode_texts=encode_responses_str,
                                 decode_texts=decode_responses_str,
-                                judge_scores=judge_scores,
+                                judge_verdicts=judge_verdicts,
                                 examples=list(encode_extra_infos),
                                 correct_reward=covert_reward_cfg.get("correct_reward", 0.5),
                             )
@@ -576,22 +599,26 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                                 decode_texts=decode_responses_str,
                             )
 
-                        # CoT length penalty on positive rewards only:
-                        # reward *= exp(-sqrt(think_length) / 100)
-                        # Encourages shorter thinking without cushioning failures.
-                        encoder_rewards = [
-                            r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
-                            for r, tl in zip(encoder_rewards, encode_think_lengths)
-                        ]
-                        decoder_rewards = [
-                            r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
-                            for r, tl in zip(decoder_rewards, decode_think_lengths)
-                        ]
+                        # Per-group normalized CoT length penalty.
+                        # Within each prompt group, computes z-score of CoT
+                        # length from correct responses only, then applies:
+                        #   reward *= (1 - alpha * sigmoid(z))
+                        # This penalizes above-average CoT relative to peers,
+                        # not in absolute terms.
+                        examples_list = list(encode_extra_infos)
+                        correctness = reward_extra_infos.get("correctness", [0.0] * len(encoder_rewards))
+                        encoder_rewards = apply_cot_length_penalty(
+                            encoder_rewards, encode_think_lengths, examples_list, correctness,
+                        )
+                        decoder_rewards = apply_cot_length_penalty(
+                            decoder_rewards, decode_think_lengths, examples_list, correctness,
+                        )
                         if judge_rewards is not None and judge_think_lengths is not None:
-                            judge_rewards = [
-                                r * math.exp(-math.sqrt(tl) / 100.0) if r > 0 else r
-                                for r, tl in zip(judge_rewards, judge_think_lengths)
-                            ]
+                            # Judge correctness: positive reward means judge was right
+                            judge_correctness = [1.0 if r > 0 else 0.0 for r in judge_rewards]
+                            judge_rewards = apply_cot_length_penalty(
+                                judge_rewards, judge_think_lengths, examples_list, judge_correctness,
+                            )
 
                         # Assign token-level rewards.
                         encode_reward_tensor = self._assign_token_rewards(encode_batch, encoder_rewards)
@@ -774,7 +801,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                             list(encode_extra_infos),
                             encode_full_responses,
                             decode_full_responses,
-                            judge_responses_str=judge_responses_str if self.judge_mode == "self" else None,
+                            judge_responses_str=judge_full_responses if self.judge_mode == "self" else None,
                             judge_rewards=judge_rewards,
                         )
 
@@ -821,10 +848,19 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     # Self-judge metrics
                     if judge_rewards is not None:
                         metrics["covert_comm/avg_judge_reward"] = sum(judge_rewards) / n if n else 0.0
-                    self_judge_scores = reward_extra_infos.get("self_judge_score", [])
-                    if self_judge_scores:
-                        metrics["covert_comm/avg_self_judge_score"] = (
-                            sum(self_judge_scores) / len(self_judge_scores)
+                    judge_said_yes_list = reward_extra_infos.get("judge_said_yes", [])
+                    if judge_said_yes_list:
+                        metrics["covert_comm/judge_yes_rate"] = (
+                            sum(judge_said_yes_list) / len(judge_said_yes_list)
+                        )
+                        # Judge accuracy: YES matches correct, NO matches incorrect
+                        correctness = reward_extra_infos.get("correctness", [])
+                        n_judge_correct = sum(
+                            1 for i in range(min(len(judge_said_yes_list), len(correctness)))
+                            if (judge_said_yes_list[i] > 0.5) == (correctness[i] > 0.5)
+                        )
+                        metrics["covert_comm/judge_accuracy"] = (
+                            n_judge_correct / len(judge_said_yes_list) if judge_said_yes_list else 0.0
                         )
 
                 metrics.update({
@@ -945,9 +981,14 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                     "encoder_reward": encoder_rewards[i],
                     "decoder_reward": decoder_rewards[i],
                     "correct": extra_infos.get("correctness", [0.0] * len(encode_texts))[i],
-                    "obfuscation_score": extra_infos.get("obfuscation_score", [0.0] * len(encode_texts))[i],
                     "judge_verdict": extra_infos.get("judge_verdict", [""] * len(encode_texts))[i],
                 }
+                obf_scores = extra_infos.get("obfuscation_score")
+                if obf_scores and i < len(obf_scores):
+                    record["obfuscation_score"] = obf_scores[i]
+                judge_said_yes_list = extra_infos.get("judge_said_yes")
+                if judge_said_yes_list and i < len(judge_said_yes_list):
+                    record["judge_said_yes"] = judge_said_yes_list[i]
                 if encode_full_responses is not None:
                     record["encode_full_response"] = encode_full_responses[i]
                 if decode_full_responses is not None:

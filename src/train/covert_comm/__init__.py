@@ -9,8 +9,10 @@ circular import with ``src.train.verl.grpo``.  Import it directly::
 from src.train.covert_comm.rewards import (
     CovertCommReward,
     CovertCommunicationReward,
+    apply_cot_length_penalty,
     compute_self_judge_rewards,
     parse_judge_score,
+    parse_judge_verdict,
 )
 from src.train.covert_comm.trainer import (
     CovertCommRayTrainer,
@@ -27,8 +29,10 @@ from src.train.covert_comm.prompts import (
 __all__ = [
     "CovertCommReward",
     "CovertCommunicationReward",
+    "apply_cot_length_penalty",
     "compute_self_judge_rewards",
     "parse_judge_score",
+    "parse_judge_verdict",
     "CovertCommRayTrainer",
     "CovertCommTrainer",
     "CovertCommTaskRunner",

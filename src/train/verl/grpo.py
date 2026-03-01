@@ -140,9 +140,13 @@ class VerlGRPO(TrainingService):
             self.training_config.per_device_batch_size = full_batch_size
         self.print(f"Optimizer update batch size: {full_batch_size}")
 
-        # Calculate checkpoint save contents based on save_only_model
+        # Calculate checkpoint save contents based on save_only_model / save_lora_only
         # Format as YAML list string for the template
-        if self.training_config.save_only_model:
+        if getattr(self.training_config, "save_lora_only", False):
+            # Empty list: skip model/optimizer/extra shards entirely.
+            # The LoRA adapter is saved independently by fsdp_workers.py.
+            checkpoint_save_contents = "[]"
+        elif self.training_config.save_only_model:
             checkpoint_save_contents = "['model']"
         else:
             checkpoint_save_contents = "['model', 'optimizer', 'extra']"
