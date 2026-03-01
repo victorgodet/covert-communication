@@ -256,6 +256,7 @@ class VerlCovertCommGRPO(VerlGRPO):
             "obfuscation_weight": getattr(self.training_config, "obfuscation_weight", 1.0),
             "judge_model_id": getattr(self.training_config, "judge_model_id", "deepseek/deepseek-v3.2"),
             "max_message_length": getattr(self.training_config, "max_message_length", None),
+            "judge_thinking": getattr(self.training_config, "judge_thinking", False),
         }
 
         # Save updated config

@@ -378,6 +378,7 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                 incorrect_penalty=covert_reward_cfg.get("incorrect_penalty", -1.0),
                 obfuscation_weight=covert_reward_cfg.get("obfuscation_weight", 1.0),
                 judge_model_id=covert_reward_cfg.get("judge_model_id", "deepseek/deepseek-v3.2"),
+                judge_thinking=covert_reward_cfg.get("judge_thinking", False),
             )
             use_lightweight_reward = False
 
@@ -1000,6 +1001,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                 self_judge_scores = extra_infos.get("self_judge_score", [])
                 if self_judge_scores and i < len(self_judge_scores):
                     record["self_judge_score"] = self_judge_scores[i]
+                judge_reasonings = extra_infos.get("judge_reasoning")
+                if judge_reasonings and i < len(judge_reasonings) and judge_reasonings[i]:
+                    record["judge_reasoning"] = judge_reasonings[i]
                 f.write(json.dumps(record) + "\n")
 
 

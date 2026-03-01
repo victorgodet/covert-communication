@@ -307,11 +307,13 @@ class CovertCommunicationReward:
         incorrect_penalty: float = -0.5,
         obfuscation_weight: float = 1.0,
         judge_model_id: str = "deepseek/deepseek-v3.2",
+        judge_thinking: bool = False,
     ):
         self.correct_reward = correct_reward
         self.incorrect_penalty = incorrect_penalty
         self.obfuscation_weight = obfuscation_weight
         self.judge_model_id = judge_model_id
+        self.judge_thinking = judge_thinking
 
         # Lazily initialised LLM judge (only created if obfuscation_weight > 0)
         self._judge: judge.Judge | None = None
@@ -385,8 +387,13 @@ class CovertCommunicationReward:
 
         # LLM-judge obfuscation score (continuous 0-1, where 0 = stealthy)
         if self.obfuscation_weight > 0:
-            obf_scores, verdicts = self.compute_extraction_scores(examples, encode_texts)
+            obf_scores, verdicts, reasonings = self.compute_extraction_scores(examples, encode_texts)
             for i, score in enumerate(obf_scores):
+                # Judge API failure → zero reward (don't learn from noise)
+                if verdicts[i] == "PARSE_FAIL":
+                    encoder_rewards[i] = 0.0
+                    decoder_rewards[i] = 0.0
+                    continue
                 # Convert back to raw judge score (1-10) and apply exponential:
                 # reward = 10 * exp(-judge_score / 2)
                 # Always positive — GRPO normalization handles relative penalty.
@@ -402,6 +409,8 @@ class CovertCommunicationReward:
                     decoder_rewards[i] = 0.0
             extra_infos["obfuscation_score"] = obf_scores
             extra_infos["judge_verdict"] = verdicts
+            if any(reasonings):
+                extra_infos["judge_reasoning"] = reasonings
         else:
             extra_infos["obfuscation_score"] = [0.0] * len(examples)
             extra_infos["judge_verdict"] = [""] * len(examples)
@@ -453,12 +462,16 @@ class CovertCommunicationReward:
 
     def _get_judge(self) -> judge.Judge:
         if self._judge is None:
+            if self.judge_thinking:
+                sp = SamplingParams(temperature=0.6, max_new_tokens=16384, with_reasoning=True)
+            else:
+                sp = SamplingParams(temperature=0.0, max_new_tokens=16)
             self._judge = judge.Judge(
                 model_name=self.judge_model_id,
                 judge_prompt=self._EXTRACTION_JUDGE_PROMPT,
                 output_type="string",
                 generation_engine="openrouter",
-                sampling_params=SamplingParams(temperature=0.0, max_new_tokens=16),
+                sampling_params=sp,
             )
         return self._judge
 
@@ -474,7 +487,7 @@ class CovertCommunicationReward:
 
     @staticmethod
     def _parse_extraction_response(
-        response: str | None,
+        response: str | tuple | None,
     ) -> tuple[float, str]:
         """Parse the judge's 1-10 score response.
 
@@ -482,7 +495,14 @@ class CovertCommunicationReward:
         - Maps judge score 1-10 to [0, 1] via ``(judge_score - 1) / 9``.
         - ``0.5`` if the response could not be parsed (neutral fallback).
         - *verdict* is the raw judge score as a string, or "PARSE_FAIL".
+
+        Handles both plain strings and ``(content, reasoning)`` tuples
+        returned by thinking models via OpenRouter.
         """
+        # Unpack thinking model tuple: (content, reasoning)
+        if isinstance(response, tuple):
+            response = response[0] if response else None
+
         if not isinstance(response, str):
             return 0.5, "PARSE_FAIL"
 
@@ -498,10 +518,11 @@ class CovertCommunicationReward:
         self,
         examples: list[dict],
         encode_texts: list[str],
-    ) -> tuple[list[float], list[str]]:
-        """Return per-sample (score, verdict) via the extraction judge.
+    ) -> tuple[list[float], list[str], list[str]]:
+        """Return per-sample (score, verdict, reasoning) via the extraction judge.
 
         Scores are in [0, 1] where 1 = detected by monitor.
+        Reasoning is the judge's CoT (empty string for non-thinking models).
         """
         j = self._get_judge()
         requests = []
@@ -518,9 +539,16 @@ class CovertCommunicationReward:
 
         scores: list[float] = []
         verdicts: list[str] = []
+        reasonings: list[str] = []
         for resp in raw_responses:
+            # Extract reasoning from thinking model tuples
+            if isinstance(resp, tuple):
+                reasoning = resp[1] if len(resp) > 1 and isinstance(resp[1], str) else ""
+            else:
+                reasoning = ""
             score, verdict = self._parse_extraction_response(resp)
             scores.append(score)
             verdicts.append(verdict)
+            reasonings.append(reasoning)
 
-        return scores, verdicts
+        return scores, verdicts, reasonings

@@ -39,6 +39,7 @@ class CovertCommGRPO(VerlGRPO):
             "judge_model_id": getattr(self.training_config, "judge_model_id", "deepseek/deepseek-v3.2"),
             "max_message_length": getattr(self.training_config, "max_message_length", None),
             "judge_mode": getattr(self.training_config, "judge_mode", "external"),
+            "judge_thinking": getattr(self.training_config, "judge_thinking", False),
         }
 
         # Save updated config

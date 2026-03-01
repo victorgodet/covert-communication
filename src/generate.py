@@ -307,7 +307,7 @@ class OpenAIClientBackend(AsyncLLMClientBackend):
     def turn_off_thinking(self):
         raise NotImplementedError(f"Thinking is not supported for {self.name}")
     
-    async def _acomplete(self, messages: list[dict], temperature: float | None = None, top_p: float | None = None, max_tokens: int | None = None, n: int = 1, reasoning: dict = {}, max_retries: int = 3, **kwargs) -> list[str]:
+    async def _acomplete(self, messages: list[dict], temperature: float | None = None, top_p: float | None = None, max_tokens: int | None = None, n: int = 1, reasoning: dict = {}, max_retries: int = 8, **kwargs) -> list[str]:
         for attempt in range(max_retries):
             try:
                 response = await self.client.chat.completions.create(
@@ -322,13 +322,15 @@ class OpenAIClientBackend(AsyncLLMClientBackend):
                 )
                 choices = response.choices
                 if reasoning.get('enabled', False):
-                    return [(c.message.content.strip() if c.message.content else "", c.message.__dict__.get("reasoning", "").strip()) for c in choices]
+                    return [(c.message.content.strip() if c.message.content else "", (getattr(c.message, 'model_extra', {}) or {}).get("reasoning", "").strip()) for c in choices]
                 return [c.message.content.strip() if c.message.content else "" for c in choices]
             except Exception as e:
+                wait = min(2 ** (attempt + 1), 60)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** (attempt + 1))
+                    print(f"Retry {attempt+1}/{max_retries} after {wait}s: {e}")
+                    await asyncio.sleep(wait)
                     continue
-                print(f"Async request failed: {e}")
+                print(f"Async request failed after {max_retries} retries: {e}")
                 return [None for _ in range(n)]
         return [None for _ in range(n)]
     
@@ -363,7 +365,7 @@ class OpenRouterGenerator(OpenAIClientBackend):
     name = "openrouter"
     supports_native_n = False
     
-    def __init__(self, model_name: str, concurrent_requests: int = 100, timeout: int = 60, **kwargs):
+    def __init__(self, model_name: str, concurrent_requests: int = 20, timeout: int = 60, **kwargs):
         # Remove openrouter/ prefix if present (OpenRouter API expects just the model ID)
         clean_model_name = model_name.removeprefix("openrouter/") if model_name.startswith("openrouter/") else model_name
 
@@ -400,7 +402,9 @@ class OpenRouterGenerator(OpenAIClientBackend):
         elif "qwen" in self.model_name:
             pass # No further action required
         else:
-            raise ValueError(f"Thinking is not supported for {self.model_name}")
+            # Default: just enable reasoning without model-specific settings
+            # (works for kimi, deepseek-r1, etc.)
+            pass
     
     def turn_off_thinking(self):
         self.reasoning_kwargs = {

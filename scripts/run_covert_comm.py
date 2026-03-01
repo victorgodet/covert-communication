@@ -56,6 +56,7 @@ def train(
     obfuscation_weight: float = 1.0,
     judge_model_id: str = "deepseek/deepseek-v3.2",
     judge_mode: str = "external",
+    judge_thinking: bool = False,
     num_generations: int = 32,
     num_prompts: int = 8,
     max_prompt_length: int = 512,
@@ -133,6 +134,7 @@ def train(
         obfuscation_weight=obfuscation_weight,
         judge_model_id=str(judge_model_id),
         judge_mode=judge_mode,
+        judge_thinking=bool(judge_thinking),
         # Empty reward/screening — trainer computes rewards directly
         reward_funcs_kwargs={},
         screening_funcs_kwargs={},
