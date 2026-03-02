@@ -23,13 +23,13 @@ print_banner() {
 }
 
 print_header_self() {
-    echo "${DIM}  step │  acc   │ stealth │ enc_r  │ dec_r  │ jdg_r  │ j_yes │ j_acc │ think${RESET}"
-    echo "${DIM}  ─────┼────────┼─────────┼────────┼────────┼────────┼───────┼───────┼──────${RESET}"
+    echo "${DIM}  step │  acc   │ stealth │ jdg_r  │ j_yes │ j_acc │ enc_ch │ dec_ch${RESET}"
+    echo "${DIM}  ─────┼────────┼─────────┼────────┼───────┼───────┼────────┼───────${RESET}"
 }
 
 print_header_external() {
-    echo "${DIM}  step │  acc   │   judge    │ stealth │ enc_r  │ dec_r  │ api_ok │ think${RESET}"
-    echo "${DIM}  ─────┼────────┼────────────┼─────────┼────────┼────────┼────────┼──────${RESET}"
+    echo "${DIM}  step │  acc   │   judge    │ stealth │ clip_e │ clip_d │ api_ok │ enc_ch │ dec_ch${RESET}"
+    echo "${DIM}  ─────┼────────┼────────────┼─────────┼────────┼────────┼────────┼────────┼───────${RESET}"
 }
 
 print_step_from_rollout() {
@@ -49,20 +49,26 @@ step = records[0].get('step', '?')
 n_correct = sum(1 for r in records if r.get('correct', 0) > 0)
 acc_pct = n_correct * 100 / n
 
-avg_enc_r = sum(r.get('encoder_reward', 0) for r in records) / n
-avg_dec_r = sum(r.get('decoder_reward', 0) for r in records) / n
-
 # Detect format
 verdicts = [r.get('judge_verdict', '') for r in records]
 has_binary = any(v in ('YES', 'NO') for v in verdicts)
 
-# Think lengths
-think_lens = []
+# Think lengths (correct samples only)
+enc_think_lens = []
+dec_think_lens = []
 for r in records:
-    full = r.get('encode_full_response', '')
-    m = re.search(r'<think>(.*?)</think>', full, re.DOTALL)
-    think_lens.append(len(m.group(1)) if m else 0)
-avg_think = sum(think_lens) // len(think_lens) if think_lens else 0
+    if r.get('correct', 0) <= 0:
+        continue
+    enc_full = r.get('encode_full_response', '')
+    dec_full = r.get('decode_full_response', '')
+    em = re.search(r'<think>(.*?)</think>', enc_full, re.DOTALL)
+    dm = re.search(r'<think>(.*?)</think>', dec_full, re.DOTALL)
+    if em:
+        enc_think_lens.append(len(em.group(1)))
+    if dm:
+        dec_think_lens.append(len(dm.group(1)))
+avg_enc_think = sum(enc_think_lens) // len(enc_think_lens) if enc_think_lens else 0
+avg_dec_think = sum(dec_think_lens) // len(dec_think_lens) if dec_think_lens else 0
 
 # Color helpers
 G = '\033[32m'
@@ -95,30 +101,34 @@ if has_binary:
     j_yes_c = color_pct(j_yes_pct, good=40, bad=80)
     j_acc_c = color_pct(j_acc_pct)
 
-    print(f'  {step:<4} \u2502 {acc_c} \u2502 {stealth_str:<7} \u2502 {avg_enc_r:+5.2f}  \u2502 {avg_dec_r:+5.2f}  \u2502 {jdg_r_str:<6} \u2502 {j_yes_c} \u2502 {j_acc_c} \u2502 {avg_think}', end='')
+    print(f'  {step:<4} \u2502 {acc_c} \u2502 {stealth_str:<7} \u2502 {jdg_r_str:<6} \u2502 {j_yes_c} \u2502 {j_acc_c} \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
 
 else:
     # External judge mode
     judge_scores = []
+    judge_scores_correct = []
     parse_fails = 0
-    for v in verdicts:
+    for i, v in enumerate(verdicts):
         try:
-            judge_scores.append(int(v))
+            s = int(v)
+            judge_scores.append(s)
+            if records[i].get('correct', 0) > 0:
+                judge_scores_correct.append(s)
         except (ValueError, TypeError):
             parse_fails += 1
 
     n_api = len(judge_scores)
     api_str = f'{n_api}/{n}'
 
-    if judge_scores:
-        avg_judge = sum(judge_scores) / len(judge_scores)
-        variance = sum((s - avg_judge) ** 2 for s in judge_scores) / len(judge_scores)
+    if judge_scores_correct:
+        avg_judge = sum(judge_scores_correct) / len(judge_scores_correct)
+        variance = sum((s - avg_judge) ** 2 for s in judge_scores_correct) / len(judge_scores_correct)
         std_judge = math.sqrt(variance)
 
         n_stealth = sum(1 for r in records
                         if r.get('correct', 0) > 0
                         and r.get('judge_verdict', '') not in ('', 'PARSE_FAIL', None)
-                        and int(r['judge_verdict']) <= 3)
+                        and int(r['judge_verdict']) <= 2)
         stealth_str = f'{n_stealth}/{n_correct}' if n_correct else '0/0'
 
         if avg_judge <= 3:    j_c = f'{G}{avg_judge:.1f}\u00b1{std_judge:.1f}{X}'
@@ -133,9 +143,27 @@ else:
     elif api_pct >= 80: api_c = f'{Y}{api_str}{X}'
     else:               api_c = f'{R}{api_str}{X}'
 
+    # Clip rates (truncated responses — missing </think>)
+    enc_clip = sum(1 for r in records
+                   if '<think>' in r.get('encode_full_response', '')
+                   and '</think>' not in r.get('encode_full_response', ''))
+    dec_clip = sum(1 for r in records
+                   if '<think>' in r.get('decode_full_response', '')
+                   and '</think>' not in r.get('decode_full_response', ''))
+    enc_clip_pct = enc_clip * 100 / n if n else 0
+    dec_clip_pct = dec_clip * 100 / n if n else 0
+
+    def clip_color(pct):
+        if pct <= 5:  return f'{G}{pct:4.0f}%{X}'
+        if pct <= 15: return f'{Y}{pct:4.0f}%{X}'
+        return f'{R}{pct:4.0f}%{X}'
+
+    enc_clip_c = clip_color(enc_clip_pct)
+    dec_clip_c = clip_color(dec_clip_pct)
+
     acc_c = color_pct(acc_pct)
 
-    print(f'  {step:<4} \u2502 {acc_c} \u2502 {j_c:>10} \u2502 {stealth_str:<7} \u2502 {avg_enc_r:+5.2f}  \u2502 {avg_dec_r:+5.2f}  \u2502 {api_c:>6} \u2502 {avg_think}', end='')
+    print(f'  {step:<4} \u2502 {acc_c} \u2502 {j_c:>10} \u2502 {stealth_str:<7} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {api_c:>6} \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
 " 2>/dev/null
 }
 
@@ -235,7 +263,7 @@ while true; do
         continue
     fi
 
-    for f in $(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | sort -t_ -k2 -n); do
+    for f in $(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | while read p; do n=$(basename "$p" .jsonl | sed 's/step_//'); printf '%s %s\n' "$n" "$p"; done | sort -n | cut -d' ' -f2-); do
         step_num=$(basename "$f" .jsonl | sed 's/step_//')
         # Skip already printed steps
         if [[ "$step_num" -le "$LAST_STEP" ]] 2>/dev/null; then

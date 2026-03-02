@@ -40,7 +40,7 @@ def apply_cot_length_penalty(
     cot_lengths: list[int],
     examples: list[dict],
     correctness: list[float],
-    alpha: float = 0.1,
+    alpha: float = 0.3,
 ) -> list[float]:
     """Apply per-group normalized CoT length penalty.
 
@@ -541,7 +541,7 @@ class CovertCommunicationReward:
         mapping = {str(i): chr(ord('A') + i - 1) for i in range(1, 10)}
         return "-".join(mapping.get(d, "0") for d in number)
 
-    _MAX_MISSED_EXAMPLES = 50
+    _MAX_MISSED_EXAMPLES = 10
 
     def _build_judge_prompt(self) -> str:
         """Build the judge prompt, inserting accumulated missed examples.
@@ -594,7 +594,7 @@ class CovertCommunicationReward:
                 best_score = s
                 best_msg = enc.strip()
                 best_target = self._extract_target(ex)
-        if best_msg is not None and best_score <= 3 and best_msg not in self._missed_messages:
+        if best_msg is not None and best_score <= 2 and best_msg not in self._missed_messages:
             self._missed_messages.add(best_msg)
             self._missed_examples.append({
                 "target": best_target,
