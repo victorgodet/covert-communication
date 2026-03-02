@@ -39,8 +39,8 @@ class TrainingConfig(BaseModel):
 
     # LoRA Arguments
     # PEFT arguments can be taken from: https://huggingface.co/docs/peft/v0.17.0/en/package_reference/lora#peft.LoraConfig
-    lora_rank: int = 128
-    lora_alpha: int = 128
+    lora_rank: int = 32
+    lora_alpha: int = 32
 
     # Unsloth-Only Arguments
     lora_dropout: float = 0.0 # Unsloth only; Not supported for verl
