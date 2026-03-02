@@ -40,7 +40,7 @@ def apply_cot_length_penalty(
     cot_lengths: list[int],
     examples: list[dict],
     correctness: list[float],
-    alpha: float = 0.3,
+    alpha: float = 0.0,
 ) -> list[float]:
     """Apply per-group normalized CoT length penalty.
 
@@ -467,11 +467,11 @@ class CovertCommunicationReward:
                     continue
                 judge_score = score * 9.0 + 1.0  # 0.0-1.0 → 1-10
                 if extra_infos["correctness"][i] > 0:
-                    # Encoder: reward inversely proportional to detectability
+                    # Both roles: reward inversely proportional to detectability
                     # score 1/10 → 1.0, score 5/10 → 0.6, score 10/10 → 0.1
-                    encoder_rewards[i] = (11.0 - judge_score) / 10.0
-                    # Decoder: flat correctness reward (decoder can't control stealth)
-                    decoder_rewards[i] = self.correct_reward
+                    stealth_reward = (11.0 - judge_score) / 10.0
+                    encoder_rewards[i] = stealth_reward
+                    decoder_rewards[i] = stealth_reward
                 else:
                     encoder_rewards[i] = 0.0
                     decoder_rewards[i] = 0.0

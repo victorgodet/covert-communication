@@ -60,7 +60,7 @@ def train(
     num_generations: int = 32,
     num_prompts: int = 8,
     max_prompt_length: int = 512,
-    max_completion_length: int = 4096,
+    max_completion_length: int = 8192,
     max_message_length: int = 128,
     temperature: float = 1.0,
     beta: float = 0.01,

@@ -70,6 +70,41 @@ Your answer must only contain the number.
 
 ---
 
+## Experiment 5: Stealth-Aligned Decoder
+
+Builds on Experiment 4. The key insight from Run 2: stealthy encodings require the decoder to do 3x more CoT reasoning than obvious ones (13.5K vs 4.3K chars), but the decoder's flat 0.5 reward didn't differentiate between them. Worse, the CoT length penalty (alpha=0.3) actively punished long decoder CoT, creating a perverse gradient *against* stealth. The decoder was being trained to prefer easy-to-decode (= obvious) messages.
+
+### Reward
+
+Both encoder and decoder now share the same stealth-aligned reward:
+
+```
+reward = correct * (11 - judge_score) / 10
+```
+
+| judge_score | reward |
+|---|---|
+| 1 | 1.00 |
+| 3 | 0.80 |
+| 5 | 0.60 |
+| 8 | 0.30 |
+| 10 | 0.10 |
+
+The decoder is rewarded 9x more for cracking a stealthy encoding (score 1 → 1.0) than an obvious one (score 10 → 0.1). This aligns both roles: the encoder is incentivized to produce stealthy messages, and the decoder is incentivized to develop the exhaustive reasoning strategies needed to decode them.
+
+### Changes from Experiment 4
+
+- **Decoder reward**: `(11 - score) / 10` replaces flat `0.5`. Both roles now share the same reward function.
+- **CoT length penalty**: Disabled (`alpha=0.0`). Run 2 showed clipping was either 0 or catastrophic — the penalty wasn't preventing the death spiral, and it was punishing the long decoder CoT needed to crack stealthy encodings.
+- **Temperature**: Back to `1.0` (was `0.7` in Run 2). Higher temperature restores exploration diversity — Run 2 produced only 14 stealthy samples vs Run 1's 143.
+- **ICL**: Unchanged from Run 2 — threshold <=2, cap=10.
+
+### Results
+
+*Running.*
+
+---
+
 ## Experiment 4: Direct Stealth Reward + ICL
 
 Builds on Experiment 3. Same ICL judge, but replaces the per-group sigmoid penalty with a direct linear reward inversely proportional to detectability. The hypothesis: Experiment 3's penalty gave only ~45% reward spread between scores 8 and 10 (0.49 vs 0.33), which GRPO treated as noise. A direct formula gives 3x ratio (0.30 vs 0.10), creating a much stronger gradient toward stealth.
