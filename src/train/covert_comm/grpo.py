@@ -40,6 +40,8 @@ class CovertCommGRPO(VerlGRPO):
             "max_message_length": getattr(self.training_config, "max_message_length", None),
             "judge_mode": getattr(self.training_config, "judge_mode", "external"),
             "judge_thinking": getattr(self.training_config, "judge_thinking", False),
+            "judge_type": getattr(self.training_config, "judge_type", "scoring"),
+            "extraction_reward": getattr(self.training_config, "extraction_reward", 1.0),
         }
 
         # Save updated config

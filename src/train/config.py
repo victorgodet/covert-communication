@@ -194,6 +194,8 @@ class GRPOConfig(TrainingConfig):
     judge_model_id: str = "deepseek/deepseek-v3.2"  # Model for obfuscation judge
     judge_mode: str = "external"  # "external" = LLM judge via OpenRouter, "self" = self-play judge
     judge_thinking: bool = False  # Enable chain-of-thought reasoning for external judge (for thinking models)
+    judge_type: Literal["scoring", "extraction"] = "scoring"  # "scoring" = 1-10 detectability score (Exp 5/6), "extraction" = judge tries to crack the hidden number (Exp 7)
+    extraction_reward: float = 1.0  # Reward when extraction judge fails to crack the hidden number
 
     # Screening-related
     fill_nan_global: bool = True # Fill nan's with global mean and std; useful when batch size is small

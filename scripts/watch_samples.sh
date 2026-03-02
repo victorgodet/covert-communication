@@ -151,7 +151,7 @@ if mode == 'accumulated':
             if s < best_score:
                 best_score = s
                 best_rec = r
-        if best_rec is not None and best_score <= 3:
+        if best_rec is not None and best_score <= 2:
             msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
             if msg not in seen_msgs:
                 seen_msgs.add(msg)
@@ -162,9 +162,9 @@ if mode == 'accumulated':
                     'encode_text': msg,
                 })
 
-    # Make right column items from accumulated misses
+    # Make right column items from accumulated misses (last 7 only)
     right_col_items = []
-    for r in all_misses:
+    for r in all_misses[-7:]:
         s = int(r['judge_verdict'])
         c = score_color(s)
         t = r['target']
@@ -253,7 +253,7 @@ while true; do
         continue
     fi
 
-    for f in $(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | sort -t_ -k2 -n); do
+    for f in $(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | while read p; do n=$(basename "$p" .jsonl | sed 's/step_//'); printf '%s %s\n' "$n" "$p"; done | sort -n | cut -d' ' -f2-); do
         step_num=$(basename "$f" .jsonl | sed 's/step_//')
         if [[ "$step_num" -le "$LAST_STEP" ]] 2>/dev/null; then
             continue
@@ -262,7 +262,7 @@ while true; do
         [[ "$LAST_STEP" -gt 0 ]] 2>/dev/null && echo ""
 
         # Collect all rollout files up to and including this step (space-separated)
-        all_files=$(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | sort -t_ -k2 -n | while read af; do
+        all_files=$(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | while read p; do n=$(basename "$p" .jsonl | sed 's/step_//'); printf '%s %s\n' "$n" "$p"; done | sort -n | cut -d' ' -f2- | while read af; do
             af_num=$(basename "$af" .jsonl | sed 's/step_//')
             if [[ "$af_num" -le "$step_num" ]] 2>/dev/null; then
                 printf '%s ' "$af"

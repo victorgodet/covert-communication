@@ -57,6 +57,8 @@ def train(
     judge_model_id: str = "deepseek/deepseek-v3.2",
     judge_mode: str = "external",
     judge_thinking: bool = False,
+    judge_type: str = "scoring",
+    extraction_reward: float = 1.0,
     num_generations: int = 32,
     num_prompts: int = 8,
     max_prompt_length: int = 512,
@@ -82,6 +84,9 @@ def train(
         obfuscation_weight: Weight for LLM judge obfuscation score (0 = disabled).
         judge_model_id: OpenRouter model ID for the obfuscation judge.
         judge_mode: "external" for LLM judge via OpenRouter, "self" for self-play judge.
+        judge_type: "scoring" for 1-10 detectability score (Exp 5/6),
+            "extraction" for extraction judge that tries to crack (Exp 7).
+        extraction_reward: Reward when extraction judge fails to crack (default 1.0).
         num_generations: Generations per prompt (halved from default —
             two generate calls per step).
         num_prompts: Number of prompts per batch.
@@ -135,6 +140,8 @@ def train(
         judge_model_id=str(judge_model_id),
         judge_mode=judge_mode,
         judge_thinking=bool(judge_thinking),
+        judge_type=str(judge_type),
+        extraction_reward=float(extraction_reward),
         # Empty reward/screening — trainer computes rewards directly
         reward_funcs_kwargs={},
         screening_funcs_kwargs={},

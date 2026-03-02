@@ -379,6 +379,8 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                 obfuscation_weight=covert_reward_cfg.get("obfuscation_weight", 1.0),
                 judge_model_id=covert_reward_cfg.get("judge_model_id", "deepseek/deepseek-v3.2"),
                 judge_thinking=covert_reward_cfg.get("judge_thinking", False),
+                judge_type=covert_reward_cfg.get("judge_type", "scoring"),
+                extraction_reward=covert_reward_cfg.get("extraction_reward", 1.0),
             )
             use_lightweight_reward = False
 
