@@ -989,6 +989,9 @@ class CovertCommRayTrainer(RHGRPORayTrainer):
                 obf_scores = extra_infos.get("obfuscation_score")
                 if obf_scores and i < len(obf_scores):
                     record["obfuscation_score"] = obf_scores[i]
+                judge_cracked = extra_infos.get("judge_cracked")
+                if judge_cracked and i < len(judge_cracked):
+                    record["judge_cracked"] = judge_cracked[i]
                 judge_said_yes_list = extra_infos.get("judge_said_yes")
                 if judge_said_yes_list and i < len(judge_said_yes_list):
                     record["judge_said_yes"] = judge_said_yes_list[i]
