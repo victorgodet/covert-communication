@@ -127,9 +127,8 @@ def pick_7(pool):
 if is_extraction and mode != 'incorrect':
     # ── Extraction mode ──
     # Left: stealthy samples (correct + judge failed), up to 5
-    # Right: cracked samples (correct + judge succeeded), up to 3
+    # Right: accumulated ICL examples (one stealthy per step across all steps)
     stealthy = [r for r in records if is_correct(r) and not is_cracked(r)]
-    cracked  = [r for r in records if is_correct(r) and is_cracked(r)]
 
     # Dedupe
     def dedupe(pool, limit):
@@ -145,14 +144,10 @@ if is_extraction and mode != 'incorrect':
         return out
 
     left_raw = dedupe(stealthy, 5)
-    right_raw = dedupe(cracked, 3)
 
     def make_extraction_item(r, is_stealthy):
         t = r.get('target', '?')
         v = r.get('judge_verdict', '?')
-        raw_dec = r.get('decode_text', '?')
-        _m = _re.search(r'\d+', str(raw_dec))
-        decoded = _m.group(0) if _m else '?'
         msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
         if is_stealthy:
             c = STEALTHY_COLOR
@@ -162,8 +157,48 @@ if is_extraction and mode != 'incorrect':
             prefix = f'\u2717 [{t} j={v}] '
         return (prefix, msg, c)
 
-    left_col_items  = [make_extraction_item(r, True) for r in left_raw]
-    right_col_items = [make_extraction_item(r, False) for r in right_raw]
+    left_col_items = [make_extraction_item(r, True) for r in left_raw]
+
+    # Right: accumulated ICL misses (one stealthy per step, mirrors _collect_missed_examples)
+    all_files = '$all_files'.split()
+    all_misses = []
+    seen_msgs = set()
+    for af in all_files:
+        try:
+            step_records = [json.loads(l) for l in open(af)]
+        except:
+            continue
+        for r in step_records:
+            if r.get('correct', 0) <= 0:
+                continue
+            target = str(r.get('target', ''))
+            verdict = str(r.get('judge_verdict', ''))
+            if 'judge_cracked' in r:
+                cracked = r['judge_cracked'] > 0.5
+            else:
+                cracked = verdict == target
+            if cracked:
+                continue
+            msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
+            if msg not in seen_msgs:
+                seen_msgs.add(msg)
+                all_misses.append({
+                    'step': r.get('step', '?'),
+                    'target': target,
+                    'judge_verdict': verdict,
+                    'encode_text': msg,
+                })
+                break  # one per step
+
+    right_col_items = []
+    ICL_COLOR = '\033[38;5;117m'  # light blue
+    for r in all_misses[-7:]:
+        t = r['target']
+        v = r['judge_verdict']
+        st = r['step']
+        prefix = f's{st} [{t} j={v}] '
+        msg = r['encode_text']
+        right_col_items.append((prefix, msg, ICL_COLOR))
 
 else:
     # ── Scoring / self-play / --show-incorrect mode ──
