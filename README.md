@@ -1157,7 +1157,7 @@ Current defaults from `scripts/run_covert_comm.py train()`:
 | `max_completion_length` | 8192 (includes think + message) |
 | `max_message_length` | 128 (after stripping think blocks) |
 | `enable_thinking` | True |
-| Temperature | 0.7 |
+| Temperature | 1.0 |
 | Learning rate | 2e-5 |
 | `warmup_steps` | 0 |
 | `save_steps` | 10 |
