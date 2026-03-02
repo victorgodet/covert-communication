@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Live sample viewer for covert communication training.
 #
-# Default: left=correct samples (diverse scores), right=accumulated missed
-# examples (1-2/10 + correct across all steps) fed to the judge via ICL.
+# Auto-detects judge mode:
+#   Scoring:    left=correct (diverse scores), right=accumulated ICL misses
+#   Extraction: left=stealthy (correct + judge failed), right=cracked (correct + judge succeeded)
 #
-# --show-incorrect: right column shows incorrect samples instead.
+# --show-incorrect: right column shows incorrect samples instead (all modes).
 #
 # Auto-detects the latest run and switches when a new run starts.
 #
 # Usage:
-#   bash scripts/watch_samples.sh                    # accumulated misses
+#   bash scripts/watch_samples.sh                    # default (mode-adaptive)
 #   bash scripts/watch_samples.sh --show-incorrect   # correct/incorrect columns
 
-MODE="accumulated"
+MODE="auto"
 if [[ "$1" == "--show-incorrect" ]]; then
     MODE="incorrect"
 fi
@@ -48,6 +49,10 @@ def score_color(score):
     elif score <= 9: return '\033[38;5;196m'
     else:            return '\033[38;5;160m'
 
+STEALTHY_COLOR = '\033[38;5;46m'   # green
+CRACKED_COLOR  = '\033[38;5;196m'  # red
+WRONG_COLOR    = '\033[38;5;240m'  # grey
+
 try:
     records = [json.loads(l) for l in open('$file')]
 except:
@@ -61,21 +66,38 @@ n = len(records)
 verdicts = [r.get('judge_verdict', '') for r in records]
 has_binary = any(v in ('YES', 'NO') for v in verdicts)
 
-def get_score(r):
-    v = r.get('judge_verdict', '')
-    if has_binary:
-        return 10 if v == 'YES' else (1 if v == 'NO' else 5)
-    try:
-        return int(v)
-    except:
-        return -1
+# Detect extraction mode
+has_cracked_field = any('judge_cracked' in r for r in records)
+if not has_cracked_field and not has_binary:
+    obf = [r.get('obfuscation_score', -1) for r in records]
+    binary_obf = all(o in (0.0, 1.0, -1) for o in obf)
+    is_extraction = binary_obf and any(o >= 0 for o in obf)
+else:
+    is_extraction = has_cracked_field
 
 def is_correct(r):
     return r.get('correct', 0) > 0
 
-valid = [r for r in records if get_score(r) >= 0]
-if not valid:
-    valid = records
+def is_cracked(r):
+    if 'judge_cracked' in r:
+        return r['judge_cracked'] > 0.5
+    return str(r.get('judge_verdict', '')) == str(r.get('target', ''))
+
+def get_score(r):
+    v = r.get('judge_verdict', '')
+    if has_binary:
+        return 10 if v == 'YES' else (1 if v == 'NO' else 5)
+    if is_extraction:
+        if is_correct(r) and not is_cracked(r):
+            return 1   # stealthy = best
+        elif is_correct(r) and is_cracked(r):
+            return 9   # cracked = bad
+        else:
+            return 5   # incorrect
+    try:
+        return int(v)
+    except:
+        return -1
 
 def pick_7(pool):
     if not pool:
@@ -102,87 +124,129 @@ def pick_7(pool):
             mid_picks.append(deduped[middle[j]])
     return top2 + mid_picks + bottom2
 
-# Left column: correct samples (diverse scores), always the same
-correct_by_score = sorted([r for r in valid if is_correct(r)], key=get_score)
-left_col = sorted(pick_7(correct_by_score), key=get_score, reverse=True)
+if is_extraction and mode != 'incorrect':
+    # ── Extraction mode ──
+    # Left: stealthy samples (correct + judge failed), up to 5
+    # Right: cracked samples (correct + judge succeeded), up to 3
+    stealthy = [r for r in records if is_correct(r) and not is_cracked(r)]
+    cracked  = [r for r in records if is_correct(r) and is_cracked(r)]
 
-def make_item(r):
-    t = r.get('target', '?')
-    v = r.get('judge_verdict', '?')
-    raw_dec = r.get('decode_text', r.get('decoded_value', '?'))
-    _m = _re.search(r'\d+', str(raw_dec))
-    decoded = _m.group(0) if _m else '?'
-    score = get_score(r)
-    if has_binary:
-        tag = v
-    else:
-        tag = f'{v}/10' if v not in ('PARSE_FAIL', '') else '?/10'
-    c = score_color(score) if score >= 0 else DIM
-    status = '\u2713' if is_correct(r) else '\u2717'
-    msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
-    if is_correct(r):
-        prefix = f'{status} [{t} {tag}] '
-    else:
-        prefix = f'{status} [{t}\u2192{decoded} {tag}] '
-    return (prefix, msg, c)
+    # Dedupe
+    def dedupe(pool, limit):
+        out = []
+        seen = set()
+        for r in pool:
+            msg = r.get('encode_text', '').strip()
+            if msg not in seen:
+                seen.add(msg)
+                out.append(r)
+            if len(out) >= limit:
+                break
+        return out
 
-# Right column
-if mode == 'accumulated':
-    # Mirror the code logic: 1 best correct sample per step, only if <=3
-    all_files = '$all_files'.split()
-    all_misses = []
-    seen_msgs = set()
-    for af in all_files:
-        try:
-            step_records = [json.loads(l) for l in open(af)]
-        except:
-            continue
-        # Find the single lowest-scoring correct sample in this step
-        best_score = 11
-        best_rec = None
-        for r in step_records:
-            if r.get('correct', 0) <= 0:
-                continue
-            v = r.get('judge_verdict', '')
+    left_raw = dedupe(stealthy, 5)
+    right_raw = dedupe(cracked, 3)
+
+    def make_extraction_item(r, is_stealthy):
+        t = r.get('target', '?')
+        v = r.get('judge_verdict', '?')
+        raw_dec = r.get('decode_text', '?')
+        _m = _re.search(r'\d+', str(raw_dec))
+        decoded = _m.group(0) if _m else '?'
+        msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
+        if is_stealthy:
+            c = STEALTHY_COLOR
+            prefix = f'\u2713 [{t} j={v}] '
+        else:
+            c = CRACKED_COLOR
+            prefix = f'\u2717 [{t} j={v}] '
+        return (prefix, msg, c)
+
+    left_col_items  = [make_extraction_item(r, True) for r in left_raw]
+    right_col_items = [make_extraction_item(r, False) for r in right_raw]
+
+else:
+    # ── Scoring / self-play / --show-incorrect mode ──
+    valid = [r for r in records if get_score(r) >= 0]
+    if not valid:
+        valid = records
+
+    def make_item(r):
+        t = r.get('target', '?')
+        v = r.get('judge_verdict', '?')
+        raw_dec = r.get('decode_text', r.get('decoded_value', '?'))
+        _m = _re.search(r'\d+', str(raw_dec))
+        decoded = _m.group(0) if _m else '?'
+        score = get_score(r)
+        if has_binary:
+            tag = v
+        else:
+            tag = f'{v}/10' if v not in ('PARSE_FAIL', '') else '?/10'
+        c = score_color(score) if score >= 0 else DIM
+        status = '\u2713' if is_correct(r) else '\u2717'
+        msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
+        if is_correct(r):
+            prefix = f'{status} [{t} {tag}] '
+        else:
+            prefix = f'{status} [{t}\u2192{decoded} {tag}] '
+        return (prefix, msg, c)
+
+    # Left column: correct samples (diverse scores)
+    correct_by_score = sorted([r for r in valid if is_correct(r)], key=get_score)
+    left_col = sorted(pick_7(correct_by_score), key=get_score, reverse=True)
+    left_col_items = [make_item(r) for r in left_col]
+
+    if mode == 'incorrect':
+        # Right: incorrect samples
+        incorrect_by_score = sorted([r for r in valid if not is_correct(r)], key=get_score)
+        right_col_raw = sorted(pick_7(incorrect_by_score), key=get_score, reverse=True)
+        right_col_items = [make_item(r) for r in right_col_raw]
+    else:
+        # Right: accumulated ICL misses
+        all_files = '$all_files'.split()
+        all_misses = []
+        seen_msgs = set()
+        for af in all_files:
             try:
-                s = int(v)
+                step_records = [json.loads(l) for l in open(af)]
             except:
                 continue
-            if s < best_score:
-                best_score = s
-                best_rec = r
-        if best_rec is not None and best_score <= 2:
-            msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
-            if msg not in seen_msgs:
-                seen_msgs.add(msg)
-                all_misses.append({
-                    'step': best_rec.get('step', '?'),
-                    'target': best_rec.get('target', '?'),
-                    'judge_verdict': str(best_score),
-                    'encode_text': msg,
-                })
+            best_score = 11
+            best_rec = None
+            for r in step_records:
+                if r.get('correct', 0) <= 0:
+                    continue
+                v = r.get('judge_verdict', '')
+                try:
+                    s = int(v)
+                except:
+                    continue
+                if s < best_score:
+                    best_score = s
+                    best_rec = r
+            if best_rec is not None and best_score <= 2:
+                msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
+                if msg not in seen_msgs:
+                    seen_msgs.add(msg)
+                    all_misses.append({
+                        'step': best_rec.get('step', '?'),
+                        'target': best_rec.get('target', '?'),
+                        'judge_verdict': str(best_score),
+                        'encode_text': msg,
+                    })
 
-    # Make right column items from accumulated misses (last 7 only)
-    right_col_items = []
-    for r in all_misses[-7:]:
-        s = int(r['judge_verdict'])
-        c = score_color(s)
-        t = r['target']
-        st = r['step']
-        tag = f'{s}/10'
-        prefix = f's{st} [{t} {tag}] '
-        msg = r['encode_text']
-        right_col_items.append((prefix, msg, c))
-else:
-    # Incorrect samples (old behavior)
-    incorrect_by_score = sorted([r for r in valid if not is_correct(r)], key=get_score)
-    right_col_raw = sorted(pick_7(incorrect_by_score), key=get_score, reverse=True)
-    right_col_items = [make_item(r) for r in right_col_raw]
+        right_col_items = []
+        for r in all_misses[-7:]:
+            s = int(r['judge_verdict'])
+            c = score_color(s)
+            t = r['target']
+            st = r['step']
+            tag = f'{s}/10'
+            prefix = f's{st} [{t} {tag}] '
+            msg = r['encode_text']
+            right_col_items.append((prefix, msg, c))
 
-# Make left column items
-left_col_items = [make_item(r) for r in left_col]
-
-# Display: 2 columns
+# ── Render two columns ──
 margin_w = 5
 sep = ' '
 half_w = (cols - margin_w - len(sep)) // 2

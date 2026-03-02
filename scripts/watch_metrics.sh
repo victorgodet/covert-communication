@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Watch covert communication training metrics in real-time.
 # Auto-detects the latest run and switches when a new run starts.
-# Adapts display for self-play (YES/NO) vs external judge (1-10).
+# Adapts display for self-play (YES/NO), scoring judge (1-10), or extraction judge.
 #
 # Usage: bash scripts/watch_metrics.sh
 
@@ -32,6 +32,11 @@ print_header_external() {
     echo "${DIM}  ─────┼────────┼────────────┼─────────┼────────┼────────┼────────┼────────┼───────${RESET}"
 }
 
+print_header_extraction() {
+    echo "${DIM}  step │  acc   │ cracked │ stealthy │  reward │ clip_e │ clip_d │ enc_ch │ dec_ch${RESET}"
+    echo "${DIM}  ─────┼────────┼─────────┼──────────┼─────────┼────────┼────────┼────────┼───────${RESET}"
+}
+
 print_step_from_rollout() {
     local rollout_file="$1"
     python3 -c "
@@ -52,6 +57,17 @@ acc_pct = n_correct * 100 / n
 # Detect format
 verdicts = [r.get('judge_verdict', '') for r in records]
 has_binary = any(v in ('YES', 'NO') for v in verdicts)
+has_cracked = any('judge_cracked' in r for r in records)
+
+# If no judge_cracked field, detect extraction mode from verdict patterns:
+# extraction mode verdicts are multi-digit numbers or PARSE_FAIL (not 1-10 scores)
+if not has_cracked and not has_binary:
+    extraction_like = sum(1 for v in verdicts if v not in ('', 'PARSE_FAIL') and len(str(v)) >= 2 and str(v) not in ('10',))
+    # If most verdicts are multi-digit and we have obfuscation_score that's 0.0 or 1.0
+    obf = [r.get('obfuscation_score', -1) for r in records]
+    binary_obf = all(o in (0.0, 1.0, -1) for o in obf)
+    if binary_obf and any(o >= 0 for o in obf):
+        has_cracked = True
 
 # Think lengths (correct samples only)
 enc_think_lens = []
@@ -81,7 +97,66 @@ def color_pct(val, good=70, bad=30):
     if val >= bad:  return f'{Y}{val:5.1f}%{X}'
     return f'{R}{val:5.1f}%{X}'
 
-if has_binary:
+# Clip rates (truncated responses — missing </think>)
+enc_clip = sum(1 for r in records
+               if '<think>' in r.get('encode_full_response', '')
+               and '</think>' not in r.get('encode_full_response', ''))
+dec_clip = sum(1 for r in records
+               if '<think>' in r.get('decode_full_response', '')
+               and '</think>' not in r.get('decode_full_response', ''))
+enc_clip_pct = enc_clip * 100 / n if n else 0
+dec_clip_pct = dec_clip * 100 / n if n else 0
+
+def clip_color(pct):
+    if pct <= 5:  return f'{G}{pct:4.0f}%{X}'
+    if pct <= 15: return f'{Y}{pct:4.0f}%{X}'
+    return f'{R}{pct:4.0f}%{X}'
+
+enc_clip_c = clip_color(enc_clip_pct)
+dec_clip_c = clip_color(dec_clip_pct)
+acc_c = color_pct(acc_pct)
+
+if has_cracked and not has_binary:
+    # Extraction judge mode
+    # Determine cracked by: judge_cracked field, or by comparing judge_verdict to target
+    n_cracked = 0
+    n_stealthy = 0
+    for r in records:
+        if r.get('correct', 0) <= 0:
+            continue
+        if 'judge_cracked' in r:
+            if r['judge_cracked'] > 0.5:
+                n_cracked += 1
+            else:
+                n_stealthy += 1
+        else:
+            # Fallback: compare verdict to target
+            if str(r.get('judge_verdict', '')) == str(r.get('target', '')):
+                n_cracked += 1
+            else:
+                n_stealthy += 1
+
+    cracked_str = f'{n_cracked}/{n_correct}' if n_correct else '0/0'
+    stealthy_str = f'{n_stealthy}/{n_correct}' if n_correct else '0/0'
+
+    cracked_pct = n_cracked * 100 / n_correct if n_correct else 0
+    if cracked_pct <= 30:   cr_c = f'{G}{cracked_str}{X}'
+    elif cracked_pct <= 70: cr_c = f'{Y}{cracked_str}{X}'
+    else:                   cr_c = f'{R}{cracked_str}{X}'
+
+    stealthy_pct = n_stealthy * 100 / n_correct if n_correct else 0
+    if stealthy_pct >= 30:  st_c = f'{G}{stealthy_str}{X}'
+    elif stealthy_pct >= 10: st_c = f'{Y}{stealthy_str}{X}'
+    else:                   st_c = f'{R}{stealthy_str}{X}'
+
+    avg_reward = sum(r.get('encoder_reward', 0) for r in records) / n if n else 0
+    if avg_reward >= 0.3:   rw_c = f'{G}{avg_reward:6.3f}{X}'
+    elif avg_reward >= 0.1: rw_c = f'{Y}{avg_reward:6.3f}{X}'
+    else:                   rw_c = f'{R}{avg_reward:6.3f}{X}'
+
+    print(f'  {step:<4} \u2502 {acc_c} \u2502 {cr_c:>7} \u2502 {st_c:>8} \u2502 {rw_c:>7} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
+
+elif has_binary:
     # Self-play mode
     jdg_rewards = [r['judge_reward'] for r in records if 'judge_reward' in r]
     jdg_r_str = f'{sum(jdg_rewards)/len(jdg_rewards):+.2f}' if jdg_rewards else '   -'
@@ -104,7 +179,7 @@ if has_binary:
     print(f'  {step:<4} \u2502 {acc_c} \u2502 {stealth_str:<7} \u2502 {jdg_r_str:<6} \u2502 {j_yes_c} \u2502 {j_acc_c} \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
 
 else:
-    # External judge mode
+    # External scoring judge mode
     judge_scores = []
     judge_scores_correct = []
     parse_fails = 0
@@ -143,24 +218,6 @@ else:
     elif api_pct >= 80: api_c = f'{Y}{api_str}{X}'
     else:               api_c = f'{R}{api_str}{X}'
 
-    # Clip rates (truncated responses — missing </think>)
-    enc_clip = sum(1 for r in records
-                   if '<think>' in r.get('encode_full_response', '')
-                   and '</think>' not in r.get('encode_full_response', ''))
-    dec_clip = sum(1 for r in records
-                   if '<think>' in r.get('decode_full_response', '')
-                   and '</think>' not in r.get('decode_full_response', ''))
-    enc_clip_pct = enc_clip * 100 / n if n else 0
-    dec_clip_pct = dec_clip * 100 / n if n else 0
-
-    def clip_color(pct):
-        if pct <= 5:  return f'{G}{pct:4.0f}%{X}'
-        if pct <= 15: return f'{Y}{pct:4.0f}%{X}'
-        return f'{R}{pct:4.0f}%{X}'
-
-    enc_clip_c = clip_color(enc_clip_pct)
-    dec_clip_c = clip_color(dec_clip_pct)
-
     acc_c = color_pct(acc_pct)
 
     print(f'  {step:<4} \u2502 {acc_c} \u2502 {j_c:>10} \u2502 {stealth_str:<7} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {api_c:>6} \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
@@ -174,12 +231,13 @@ import sys
 try:
     import yaml
 except ImportError:
-    # Fallback: grep for judge_mode
     import subprocess
-    out = subprocess.run(['grep', 'judge_mode', '${run_dir}verl_full_config.yaml'],
+    out = subprocess.run(['grep', '-E', 'judge_mode|judge_type', '${run_dir}verl_full_config.yaml'],
                          capture_output=True, text=True).stdout
     if 'self' in out:
         print('self-play')
+    elif 'extraction' in out:
+        print('extraction')
     else:
         print('external')
     sys.exit(0)
@@ -188,9 +246,12 @@ with open('${run_dir}verl_full_config.yaml') as f:
     cfg = yaml.safe_load(f)
 cc = cfg.get('covert_comm', {})
 mode = cc.get('judge_mode', 'external')
+judge_type = cc.get('judge_type', 'scoring')
 judge = cc.get('judge_model_id', '')
 if mode == 'self':
     print('self-play')
+elif judge_type == 'extraction':
+    print(f'extraction ({judge.split(\"/\")[-1]})')
 else:
     print(f'external ({judge.split(\"/\")[-1]})')
 " 2>/dev/null
@@ -205,8 +266,15 @@ try:
     verdicts = [r.get('judge_verdict', '') for r in records]
     if any(v in ('YES', 'NO') for v in verdicts):
         print('self-play')
+    elif any('judge_cracked' in r for r in records):
+        print('extraction')
     else:
-        print('external')
+        # Check if obfuscation_score is binary (0/1) → extraction
+        obf = [r.get('obfuscation_score', -1) for r in records]
+        if all(o in (0.0, 1.0, -1) for o in obf) and any(o >= 0 for o in obf):
+            print('extraction')
+        else:
+            print('external')
 except:
     print('unknown')
 " 2>/dev/null
@@ -228,6 +296,8 @@ print_run_header() {
     print_banner "$(basename "${run_dir%/}")" "$CURRENT_MODE"
     if [[ "$CURRENT_MODE" == "self-play" ]]; then
         print_header_self
+    elif [[ "$CURRENT_MODE" == extraction* ]]; then
+        print_header_extraction
     else
         print_header_external
     fi
@@ -276,6 +346,8 @@ while true; do
             print_banner "$(basename "${CURRENT_RUN%/}")" "$CURRENT_MODE"
             if [[ "$CURRENT_MODE" == "self-play" ]]; then
                 print_header_self
+            elif [[ "$CURRENT_MODE" == extraction* ]]; then
+                print_header_extraction
             else
                 print_header_external
             fi
