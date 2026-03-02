@@ -70,6 +70,40 @@ Your answer must only contain the number.
 
 ---
 
+## Experiment 6: Quadratic Stealth Reward
+
+Builds on Experiment 5. The linear reward `(11 - score) / 10` gives only a 4.5x ratio between stealthy (score 2 → 0.9) and obvious (score 9 → 0.2) encodings. With obvious strategies decoding correctly 95%+ of the time vs ~5% for stealthy ones, the expected reward favors being obvious: 0.95 × 0.2 = 0.19 vs 0.05 × 0.9 = 0.045. GRPO rationally converges on the safe strategy. Squaring the reward crushes obvious-correct rewards to near zero, making the expected values comparable and giving GRPO reason to explore stealth.
+
+### Reward
+
+```
+reward = correct * ((11 - judge_score) / 10) ** 2
+```
+
+| judge_score | linear (exp 5) | quadratic (exp 6) |
+|---|---|---|
+| 1 | 1.00 | 1.00 |
+| 2 | 0.90 | 0.81 |
+| 3 | 0.80 | 0.64 |
+| 5 | 0.60 | 0.36 |
+| 8 | 0.30 | 0.09 |
+| 9 | 0.20 | 0.04 |
+| 10 | 0.10 | 0.01 |
+
+Score 2 vs score 9: 20x ratio (vs 4.5x linear). Score 8–10 rewards collapse to 0.01–0.09, making obvious correctness nearly worthless while still distinguishable from incorrect (0.0).
+
+### Changes from Experiment 5
+
+- **Reward**: Quadratic `((11 - score) / 10)²` replaces linear `(11 - score) / 10`. Applied to both encoder and decoder.
+- **LoRA rank**: 128 (was 32). More capacity for the model to maintain multiple encoding/decoding strategies simultaneously as old ones get killed by ICL.
+- **Everything else unchanged**: `alpha=0.0`, `temperature=1.0`, ICL threshold <=2, ICL cap=10.
+
+### Results
+
+*Running.*
+
+---
+
 ## Experiment 5: Stealth-Aligned Decoder
 
 Builds on Experiment 4. The key insight from Run 2: stealthy encodings require the decoder to do 3x more CoT reasoning than obvious ones (13.5K vs 4.3K chars), but the decoder's flat 0.5 reward didn't differentiate between them. Worse, the CoT length penalty (alpha=0.3) actively punished long decoder CoT, creating a perverse gradient *against* stealth. The decoder was being trained to prefer easy-to-decode (= obvious) messages.

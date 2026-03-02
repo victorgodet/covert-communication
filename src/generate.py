@@ -109,7 +109,7 @@ class LLMGenerator(ABC):
 class VLLMGenerator(LLMGenerator):
     name = "vllm"
 
-    def __init__(self, model_name: str, lora_adapter_path: str | None = None, max_lora_rank: int = 64, **kwargs):
+    def __init__(self, model_name: str, lora_adapter_path: str | None = None, max_lora_rank: int = 128, **kwargs):
 
         self.model_name = model_name
     

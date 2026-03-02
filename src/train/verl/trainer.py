@@ -254,8 +254,8 @@ class RHGRPORayTrainer(RayPPOTrainer):
         if self.cache_activations:
             try:
                 lora_cfg = {
-                    "r": int(self.config.actor_rollout_ref.model.get("lora_rank", 32)),
-                    "lora_alpha": int(self.config.actor_rollout_ref.model.get("lora_alpha", 32)),
+                    "r": int(self.config.actor_rollout_ref.model.get("lora_rank", 128)),
+                    "lora_alpha": int(self.config.actor_rollout_ref.model.get("lora_alpha", 128)),
                     "lora_dropout": 0.0,
                     "target_modules": [
                         "q_proj",

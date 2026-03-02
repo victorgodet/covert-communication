@@ -467,9 +467,9 @@ class CovertCommunicationReward:
                     continue
                 judge_score = score * 9.0 + 1.0  # 0.0-1.0 → 1-10
                 if extra_infos["correctness"][i] > 0:
-                    # Both roles: reward inversely proportional to detectability
-                    # score 1/10 → 1.0, score 5/10 → 0.6, score 10/10 → 0.1
-                    stealth_reward = (11.0 - judge_score) / 10.0
+                    # Both roles: quadratic reward inversely proportional to detectability
+                    # score 1/10 → 1.0, score 5/10 → 0.36, score 10/10 → 0.01
+                    stealth_reward = ((11.0 - judge_score) / 10.0) ** 2
                     encoder_rewards[i] = stealth_reward
                     decoder_rewards[i] = stealth_reward
                 else:
