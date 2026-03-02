@@ -33,8 +33,8 @@ print_header_external() {
 }
 
 print_header_extraction() {
-    echo "${DIM}  step │  acc   │ cracked │ stealthy │  reward │ clip_e │ clip_d │ enc_ch │ dec_ch${RESET}"
-    echo "${DIM}  ─────┼────────┼─────────┼──────────┼─────────┼────────┼────────┼────────┼───────${RESET}"
+    echo "${DIM}  step │  acc   │ j_acc  │ stealthy │  reward │ clip_e │ clip_d │ enc_ch │ dec_ch${RESET}"
+    echo "${DIM}  ─────┼────────┼────────┼──────────┼─────────┼────────┼────────┼────────┼───────${RESET}"
 }
 
 print_step_from_rollout() {
@@ -118,32 +118,30 @@ acc_c = color_pct(acc_pct)
 
 if has_cracked and not has_binary:
     # Extraction judge mode
-    # Determine cracked by: judge_cracked field, or by comparing judge_verdict to target
-    n_cracked = 0
+    # Judge accuracy: how often does the judge extract the right number (all samples)
+    n_judge_correct = 0
     n_stealthy = 0
     for r in records:
-        if r.get('correct', 0) <= 0:
-            continue
+        target = str(r.get('target', ''))
+        verdict = str(r.get('judge_verdict', ''))
         if 'judge_cracked' in r:
             if r['judge_cracked'] > 0.5:
-                n_cracked += 1
-            else:
-                n_stealthy += 1
+                n_judge_correct += 1
         else:
-            # Fallback: compare verdict to target
-            if str(r.get('judge_verdict', '')) == str(r.get('target', '')):
-                n_cracked += 1
-            else:
+            if verdict == target:
+                n_judge_correct += 1
+        # Stealthy: correct decode + judge failed
+        if r.get('correct', 0) > 0:
+            cracked = r.get('judge_cracked', 0) > 0.5 if 'judge_cracked' in r else verdict == target
+            if not cracked:
                 n_stealthy += 1
 
-    cracked_str = f'{n_cracked}/{n_correct}' if n_correct else '0/0'
+    j_acc_pct = n_judge_correct * 100 / n if n else 0
+    if j_acc_pct <= 30:   ja_c = f'{G}{j_acc_pct:5.1f}%{X}'
+    elif j_acc_pct <= 60: ja_c = f'{Y}{j_acc_pct:5.1f}%{X}'
+    else:                 ja_c = f'{R}{j_acc_pct:5.1f}%{X}'
+
     stealthy_str = f'{n_stealthy}/{n_correct}' if n_correct else '0/0'
-
-    cracked_pct = n_cracked * 100 / n_correct if n_correct else 0
-    if cracked_pct <= 30:   cr_c = f'{G}{cracked_str}{X}'
-    elif cracked_pct <= 70: cr_c = f'{Y}{cracked_str}{X}'
-    else:                   cr_c = f'{R}{cracked_str}{X}'
-
     stealthy_pct = n_stealthy * 100 / n_correct if n_correct else 0
     if stealthy_pct >= 30:  st_c = f'{G}{stealthy_str}{X}'
     elif stealthy_pct >= 10: st_c = f'{Y}{stealthy_str}{X}'
@@ -154,7 +152,7 @@ if has_cracked and not has_binary:
     elif avg_reward >= 0.1: rw_c = f'{Y}{avg_reward:6.3f}{X}'
     else:                   rw_c = f'{R}{avg_reward:6.3f}{X}'
 
-    print(f'  {step:<4} \u2502 {acc_c} \u2502 {cr_c:>7} \u2502 {st_c:>8} \u2502 {rw_c:>7} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
+    print(f'  {step:<4} \u2502 {acc_c} \u2502 {ja_c} \u2502 {st_c:>8} \u2502 {rw_c:>7} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
 
 elif has_binary:
     # Self-play mode
