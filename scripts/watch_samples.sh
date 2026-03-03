@@ -1,32 +1,17 @@
 #!/usr/bin/env bash
-# Live sample viewer for covert communication training.
+# Live sample viewer — shows only stealthy/ICL examples (single column).
+# Compact for quarter-screen windows.
 #
-# Auto-detects judge mode:
-#   Scoring:    left=correct (diverse scores), right=accumulated ICL misses
-#   Extraction: left=stealthy (correct + judge failed), right=cracked (correct + judge succeeded)
-#
-# --show-incorrect: right column shows incorrect samples instead (all modes).
-#
-# Auto-detects the latest run and switches when a new run starts.
-#
-# Usage:
-#   bash scripts/watch_samples.sh                    # default (mode-adaptive)
-#   bash scripts/watch_samples.sh --show-incorrect   # correct/incorrect columns
-
-MODE="auto"
-if [[ "$1" == "--show-incorrect" ]]; then
-    MODE="incorrect"
-fi
+# Usage: bash scripts/watch_samples.sh
 
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
-COLS=$(tput cols 2>/dev/null || echo 120)
+COLS=$(tput cols 2>/dev/null || echo 60)
 
 print_step() {
     local file="$1"
     local all_files="$2"
-    local mode="$3"
 
     python3 -c "
 import json, sys, re as _re
@@ -35,7 +20,6 @@ cols = ${COLS}
 DIM = '\033[2m'
 BOLD = '\033[1m'
 X = '\033[0m'
-mode = '$mode'
 
 def score_color(score):
     if score <= 1:   return '\033[38;5;46m'
@@ -49,9 +33,8 @@ def score_color(score):
     elif score <= 9: return '\033[38;5;196m'
     else:            return '\033[38;5;160m'
 
-STEALTHY_COLOR = '\033[38;5;46m'   # green
-CRACKED_COLOR  = '\033[38;5;196m'  # red
-WRONG_COLOR    = '\033[38;5;240m'  # grey
+STEALTHY_COLOR = '\033[38;5;46m'
+ICL_COLOR = '\033[38;5;117m'
 
 try:
     records = [json.loads(l) for l in open('$file')]
@@ -65,262 +48,128 @@ n = len(records)
 
 verdicts = [r.get('judge_verdict', '') for r in records]
 has_binary = any(v in ('YES', 'NO') for v in verdicts)
-
-# Detect extraction mode
-has_cracked_field = any('judge_cracked' in r for r in records)
-if not has_cracked_field and not has_binary:
+has_cracked = any('judge_cracked' in r for r in records)
+if not has_cracked and not has_binary:
     obf = [r.get('obfuscation_score', -1) for r in records]
-    binary_obf = all(o in (0.0, 1.0, -1) for o in obf)
-    is_extraction = binary_obf and any(o >= 0 for o in obf)
-else:
-    is_extraction = has_cracked_field
+    if all(o in (0.0, 1.0, -1) for o in obf) and any(o >= 0 for o in obf):
+        has_cracked = True
 
 def is_correct(r):
     return r.get('correct', 0) > 0
-
 def is_cracked(r):
     if 'judge_cracked' in r:
         return r['judge_cracked'] > 0.5
     return str(r.get('judge_verdict', '')) == str(r.get('target', ''))
 
-def get_score(r):
-    v = r.get('judge_verdict', '')
-    if has_binary:
-        return 10 if v == 'YES' else (1 if v == 'NO' else 5)
-    if is_extraction:
-        if is_correct(r) and not is_cracked(r):
-            return 1   # stealthy = best
-        elif is_correct(r) and is_cracked(r):
-            return 9   # cracked = bad
-        else:
-            return 5   # incorrect
-    try:
-        return int(v)
-    except:
-        return -1
-
-def pick_7(pool):
-    if not pool:
-        return []
-    deduped = []
+# Collect stealthy samples from this step
+items = []
+if has_cracked and not has_binary:
+    # Extraction mode: correct + judge failed
     seen = set()
-    for r in pool:
-        msg = r.get('encode_text', '').strip()
-        if msg not in seen:
-            seen.add(msg)
-            deduped.append(r)
-    if len(deduped) <= 7:
-        return deduped
-    bottom2 = deduped[:2]
-    top2 = deduped[-2:]
-    used_idx = {0, 1, len(deduped)-2, len(deduped)-1}
-    middle = [i for i in range(len(deduped)) if i not in used_idx]
-    mid_picks = []
-    if middle:
-        step_size = max(1, len(middle) // 4)
-        for j in range(0, len(middle), step_size):
-            if len(mid_picks) >= 3:
-                break
-            mid_picks.append(deduped[middle[j]])
-    return top2 + mid_picks + bottom2
-
-if is_extraction and mode != 'incorrect':
-    # ── Extraction mode ──
-    # Left: stealthy samples (correct + judge failed), up to 5
-    # Right: accumulated ICL examples (one stealthy per step across all steps)
-    stealthy = [r for r in records if is_correct(r) and not is_cracked(r)]
-
-    # Dedupe
-    def dedupe(pool, limit):
-        out = []
-        seen = set()
-        for r in pool:
-            msg = r.get('encode_text', '').strip()
+    for r in records:
+        if is_correct(r) and not is_cracked(r):
+            msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
             if msg not in seen:
                 seen.add(msg)
-                out.append(r)
-            if len(out) >= limit:
+                t = r.get('target', '?')
+                v = r.get('judge_verdict', '?')
+                items.append((f'[{t} j={v}]', msg, STEALTHY_COLOR))
+            if len(items) >= 5:
                 break
-        return out
-
-    left_raw = dedupe(stealthy, 5)
-
-    def make_extraction_item(r, is_stealthy):
-        t = r.get('target', '?')
-        v = r.get('judge_verdict', '?')
-        msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
-        if is_stealthy:
-            c = STEALTHY_COLOR
-            prefix = f'\u2713 [{t} j={v}] '
-        else:
-            c = CRACKED_COLOR
-            prefix = f'\u2717 [{t} j={v}] '
-        return (prefix, msg, c)
-
-    left_col_items = [make_extraction_item(r, True) for r in left_raw]
-
-    # Right: accumulated ICL misses (one stealthy per step, mirrors _collect_missed_examples)
-    all_files = '$all_files'.split()
-    all_misses = []
-    seen_msgs = set()
-    for af in all_files:
+else:
+    # Scoring mode: correct + score <= 3
+    seen = set()
+    pool = []
+    for r in records:
+        if not is_correct(r):
+            continue
         try:
-            step_records = [json.loads(l) for l in open(af)]
+            s = int(r.get('judge_verdict', '10'))
         except:
             continue
-        for r in step_records:
+        if s <= 3:
+            msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
+            if msg not in seen:
+                seen.add(msg)
+                pool.append((s, r.get('target', '?'), msg))
+    pool.sort()
+    for s, t, msg in pool[:5]:
+        c = score_color(s)
+        items.append((f'[{t} {s}/10]', msg, c))
+
+# Also show accumulated ICL examples
+all_files = '$all_files'.split()
+icl = []
+seen_icl = set()
+
+if has_cracked and not has_binary:
+    for af in all_files:
+        try:
+            recs = [json.loads(l) for l in open(af)]
+        except:
+            continue
+        for r in recs:
             if r.get('correct', 0) <= 0:
                 continue
             target = str(r.get('target', ''))
             verdict = str(r.get('judge_verdict', ''))
-            if 'judge_cracked' in r:
-                cracked = r['judge_cracked'] > 0.5
-            else:
-                cracked = verdict == target
+            cracked = r.get('judge_cracked', 0) > 0.5 if 'judge_cracked' in r else verdict == target
             if cracked:
                 continue
             msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
-            if msg not in seen_msgs:
-                seen_msgs.add(msg)
-                all_misses.append({
-                    'step': r.get('step', '?'),
-                    'target': target,
-                    'judge_verdict': verdict,
-                    'encode_text': msg,
-                })
-                break  # one per step
-
-    right_col_items = []
-    ICL_COLOR = '\033[38;5;117m'  # light blue
-    for r in all_misses[-7:]:
-        t = r['target']
-        v = r['judge_verdict']
-        st = r['step']
-        prefix = f's{st} [{t} j={v}] '
-        msg = r['encode_text']
-        right_col_items.append((prefix, msg, ICL_COLOR))
-
+            if msg not in seen_icl:
+                seen_icl.add(msg)
+                icl.append((r.get('step', '?'), target, verdict, msg))
+                break
 else:
-    # ── Scoring / self-play / --show-incorrect mode ──
-    valid = [r for r in records if get_score(r) >= 0]
-    if not valid:
-        valid = records
-
-    def make_item(r):
-        t = r.get('target', '?')
-        v = r.get('judge_verdict', '?')
-        raw_dec = r.get('decode_text', r.get('decoded_value', '?'))
-        _m = _re.search(r'\d+', str(raw_dec))
-        decoded = _m.group(0) if _m else '?'
-        score = get_score(r)
-        if has_binary:
-            tag = v
-        else:
-            tag = f'{v}/10' if v not in ('PARSE_FAIL', '') else '?/10'
-        c = score_color(score) if score >= 0 else DIM
-        status = '\u2713' if is_correct(r) else '\u2717'
-        msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
-        if is_correct(r):
-            prefix = f'{status} [{t} {tag}] '
-        else:
-            prefix = f'{status} [{t}\u2192{decoded} {tag}] '
-        return (prefix, msg, c)
-
-    # Left column: correct samples (diverse scores)
-    correct_by_score = sorted([r for r in valid if is_correct(r)], key=get_score)
-    left_col = sorted(pick_7(correct_by_score), key=get_score, reverse=True)
-    left_col_items = [make_item(r) for r in left_col]
-
-    if mode == 'incorrect':
-        # Right: incorrect samples
-        incorrect_by_score = sorted([r for r in valid if not is_correct(r)], key=get_score)
-        right_col_raw = sorted(pick_7(incorrect_by_score), key=get_score, reverse=True)
-        right_col_items = [make_item(r) for r in right_col_raw]
-    else:
-        # Right: accumulated ICL misses
-        all_files = '$all_files'.split()
-        all_misses = []
-        seen_msgs = set()
-        for af in all_files:
+    for af in all_files:
+        try:
+            recs = [json.loads(l) for l in open(af)]
+        except:
+            continue
+        best_s = 11
+        best_rec = None
+        for r in recs:
+            if r.get('correct', 0) <= 0:
+                continue
             try:
-                step_records = [json.loads(l) for l in open(af)]
+                s = int(r.get('judge_verdict', '10'))
             except:
                 continue
-            best_score = 11
-            best_rec = None
-            for r in step_records:
-                if r.get('correct', 0) <= 0:
-                    continue
-                v = r.get('judge_verdict', '')
-                try:
-                    s = int(v)
-                except:
-                    continue
-                if s < best_score:
-                    best_score = s
-                    best_rec = r
-            if best_rec is not None and best_score <= 2:
-                msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
-                if msg not in seen_msgs:
-                    seen_msgs.add(msg)
-                    all_misses.append({
-                        'step': best_rec.get('step', '?'),
-                        'target': best_rec.get('target', '?'),
-                        'judge_verdict': str(best_score),
-                        'encode_text': msg,
-                    })
+            if s < best_s:
+                best_s = s
+                best_rec = r
+        if best_rec is not None and best_s <= 2:
+            msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
+            if msg not in seen_icl:
+                seen_icl.add(msg)
+                icl.append((best_rec.get('step', '?'), best_rec.get('target', '?'), str(best_s), msg))
 
-        right_col_items = []
-        for r in all_misses[-7:]:
-            s = int(r['judge_verdict'])
-            c = score_color(s)
-            t = r['target']
-            st = r['step']
-            tag = f'{s}/10'
-            prefix = f's{st} [{t} {tag}] '
-            msg = r['encode_text']
-            right_col_items.append((prefix, msg, c))
+w = cols - 2
 
-# ── Render two columns ──
-margin_w = 5
-sep = ' '
-half_w = (cols - margin_w - len(sep)) // 2
-n_rows = max(len(left_col_items), len(right_col_items))
+# Print this step's stealthy samples
+if items:
+    for i, (prefix, msg, c) in enumerate(items):
+        label = f's{step} ' if i == 0 else '    '
+        max_msg = w - len(label) - len(prefix) - 3
+        if len(msg) > max_msg:
+            msg = msg[:max_msg - 2] + '..'
+        print(f'{DIM}{label}{X}{c}{prefix} \"{msg}\"{X}')
+else:
+    print(f'{DIM}s{step} (no stealthy samples){X}')
 
-for row in range(n_rows):
-    margin = f'{DIM}{step:>4}{X} ' if row == 0 else '     '
-
-    # Left cell
-    if row < len(left_col_items):
-        p1, m1, c1 = left_col_items[row]
-        max1 = half_w - len(p1) - 2
-        if len(m1) > max1:
-            m1 = m1[:max1 - 2] + '..'
-        cell1 = f'{c1}{p1}\"{m1}\"{X}'
-        pad = half_w - len(p1) - len(m1) - 2
-    else:
-        cell1 = ''
-        pad = half_w
-
-    # Right cell
-    if row < len(right_col_items):
-        p2, m2, c2 = right_col_items[row]
-        max2 = half_w - len(p2) - 2
-        if len(m2) > max2:
-            m2 = m2[:max2 - 2] + '..'
-        cell2 = f'{c2}{p2}\"{m2}\"{X}'
-    else:
-        cell2 = ''
-
-    is_last = row == n_rows - 1
-    end = '' if is_last else '\n'
-    if cell2:
-        print(f'{margin}{cell1}{\" \" * pad}{sep}{cell2}', end=end)
-    else:
-        print(f'{margin}{cell1}', end=end)
-
-if n_rows == 0:
-    print(f'{DIM}{step:>4}{X} {DIM}(no samples){X}', end='')
+# Print ICL separator + accumulated examples (last 7)
+if icl:
+    print(f'{DIM}  icl ({len(icl)} total):{X}')
+    for st, t, v, msg in icl[-7:]:
+        if has_cracked and not has_binary:
+            prefix = f's{st} [{t} j={v}]'
+        else:
+            prefix = f's{st} [{t} {v}/10]'
+        max_msg = w - len(prefix) - 5
+        if len(msg) > max_msg:
+            msg = msg[:max_msg - 2] + '..'
+        print(f'  {ICL_COLOR}{prefix} \"{msg}\"{X}')
 " 2>/dev/null
 }
 
@@ -339,6 +188,10 @@ while true; do
     if [[ -n "$latest_run" && "$latest_run" != "$CURRENT_RUN" ]]; then
         CURRENT_RUN="$latest_run"
         LAST_STEP=0
+        echo ""
+        echo "${BOLD}Covert Comm Samples${RESET}"
+        echo "${DIM}$(basename "${CURRENT_RUN%/}")${RESET}"
+        echo ""
     fi
 
     if [[ -z "$CURRENT_RUN" ]]; then
@@ -357,10 +210,7 @@ while true; do
         if [[ "$step_num" -le "$LAST_STEP" ]] 2>/dev/null; then
             continue
         fi
-        # Newline to close previous step's end=''
-        [[ "$LAST_STEP" -gt 0 ]] 2>/dev/null && echo ""
 
-        # Collect all rollout files up to and including this step (space-separated)
         all_files=$(find "$rollout_dir" -name 'step_*.jsonl' 2>/dev/null | while read p; do n=$(basename "$p" .jsonl | sed 's/step_//'); printf '%s %s\n' "$n" "$p"; done | sort -n | cut -d' ' -f2- | while read af; do
             af_num=$(basename "$af" .jsonl | sed 's/step_//')
             if [[ "$af_num" -le "$step_num" ]] 2>/dev/null; then
@@ -368,7 +218,7 @@ while true; do
             fi
         done)
 
-        print_step "$f" "$all_files" "$MODE"
+        print_step "$f" "$all_files"
         LAST_STEP="$step_num"
     done
 
