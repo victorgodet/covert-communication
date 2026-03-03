@@ -88,12 +88,23 @@ def load_run(run_dir):
 
 
 def plot_experiment(data, output_path, run_name=""):
-    fig, ax1 = plt.subplots(figsize=(12, 5))
+    n_icl = len(data["icl_events"])
+    # Allocate space for ICL annotations below the plot
+    annot_height = max(1.0, n_icl * 0.45)
+    fig_height = 5 + annot_height
+    fig, ax1 = plt.subplots(figsize=(14, fig_height))
+    fig.subplots_adjust(bottom=annot_height / fig_height)
 
     steps = np.array(data["steps"])
     judge_mean = np.array(data["judge_mean"])
     judge_std = np.array(data["judge_std"])
     accuracy = np.array(data["accuracy"])
+
+    # Center judge axis around the data
+    j_lo = max(1, int(np.floor(min(judge_mean - judge_std))) - 1)
+    j_hi = min(10, int(np.ceil(max(judge_mean + judge_std))) + 1)
+    j_lo = min(j_lo, 4)  # always show at least down to 4
+    j_hi = max(j_hi, 10)  # always show up to 10
 
     # Judge score (left axis)
     ax1.set_xlabel("Step", fontsize=12)
@@ -107,8 +118,8 @@ def plot_experiment(data, output_path, run_name=""):
         color="#d62728",
         zorder=2,
     )
-    ax1.set_ylim(0, 11)
-    ax1.set_yticks(range(0, 11))
+    ax1.set_ylim(j_lo, j_hi + 0.5)
+    ax1.set_yticks(range(j_lo, j_hi + 1))
     ax1.tick_params(axis="y", labelcolor="#d62728")
 
     # Accuracy (right axis)
@@ -118,25 +129,9 @@ def plot_experiment(data, output_path, run_name=""):
     ax2.set_ylim(0, 105)
     ax2.tick_params(axis="y", labelcolor="#1f77b4")
 
-    # ICL events
+    # ICL event vertical lines
     for step, target, score, msg in data["icl_events"]:
         ax1.axvline(x=step, color="#2ca02c", alpha=0.4, linestyle=":", linewidth=1.5, zorder=1)
-        # Truncate message for label
-        label_msg = msg if len(msg) <= 50 else msg[:47] + "..."
-        label = f"ICL s{step}: [{target} {score}/10] \"{label_msg}\""
-        # Stagger vertical position to avoid overlap
-        idx = len([e for e in data["icl_events"] if e[0] <= step]) - 1
-        y_pos = 0.5 + (idx % 4) * 0.8
-        ax1.annotate(
-            label,
-            xy=(step, y_pos),
-            fontsize=6.5,
-            color="#2ca02c",
-            rotation=0,
-            ha="left",
-            va="bottom",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="#2ca02c", alpha=0.8),
-        )
 
     # Legend
     judge_patch = mpatches.Patch(color="#d62728", label="Judge score (±std)")
@@ -148,7 +143,22 @@ def plot_experiment(data, output_path, run_name=""):
     if run_name:
         title += f"\n{run_name}"
     plt.title(title, fontsize=13)
-    fig.tight_layout()
+
+    # ICL annotations below the plot area as a clean list
+    for i, (step, target, score, msg) in enumerate(data["icl_events"]):
+        full_msg = msg.replace("\n", " ").strip()
+        label = f"s{step:>2d}  [{target} {score}/10]  \"{full_msg}\""
+        y_frac = (annot_height - 0.35 - i * 0.4) / fig_height
+        fig.text(
+            0.08, y_frac,
+            label,
+            fontsize=8,
+            color="#2ca02c",
+            fontfamily="monospace",
+            va="top",
+            ha="left",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#f0fff0", edgecolor="#2ca02c", alpha=0.9),
+        )
 
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved plot to {output_path}")
