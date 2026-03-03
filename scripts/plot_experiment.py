@@ -11,6 +11,8 @@ import json
 import os
 import sys
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -204,9 +206,19 @@ def plot_experiment(data, output_path, run_name=""):
     plt.title(title, fontsize=14)
     fig.tight_layout()
 
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Saved plot to {output_path}")
+    fig.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white",
+                format="png", transparent=False)
     plt.close()
+
+    # Convert RGBA -> RGB for Google Docs compatibility
+    from PIL import Image
+    img = Image.open(output_path)
+    if img.mode == "RGBA":
+        rgb = Image.new("RGB", img.size, (255, 255, 255))
+        rgb.paste(img, mask=img.split()[3])
+        rgb.save(output_path, "PNG")
+
+    print(f"Saved plot to {output_path}")
 
 
 def generate_icl_table(data):
