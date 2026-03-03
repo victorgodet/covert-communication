@@ -136,15 +136,23 @@ def plot_experiment(data, output_path, run_name=""):
     # Judge score (left axis)
     ax1.set_xlabel("Step", fontsize=13)
     ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color="#d62728")
-    ax1.plot(steps, judge_mean, color="#d62728", linewidth=2.5, label="Judge mean", zorder=3)
+    ax1.plot(steps, judge_mean, color="#d62728", linewidth=1.5, alpha=0.6, zorder=3)
     ax1.fill_between(
         steps,
         judge_mean - judge_std,
         judge_mean + judge_std,
-        alpha=0.15,
+        alpha=0.10,
         color="#d62728",
         zorder=2,
     )
+
+    # Moving average of judge score
+    window = min(5, len(judge_mean))
+    if window >= 2:
+        kernel = np.ones(window) / window
+        judge_ma = np.convolve(judge_mean, kernel, mode="valid")
+        ma_steps = steps[window - 1:]
+        ax1.plot(ma_steps, judge_ma, color="#d62728", linewidth=3, zorder=4)
     ax1.set_ylim(j_lo, j_hi + 0.5)
     ax1.set_yticks(range(j_lo, j_hi + 1))
     ax1.tick_params(axis="y", labelcolor="#d62728")
@@ -177,12 +185,13 @@ def plot_experiment(data, output_path, run_name=""):
                  color="#333333", ha="center", va="center", zorder=6)
 
     # Legend
-    judge_patch = mpatches.Patch(color="#d62728", label="Judge score (±std)")
-    acc_patch = mpatches.Patch(color="#1f77b4", label="Accuracy %")
+    judge_line = plt.Line2D([0], [0], color="#d62728", linewidth=1.5, alpha=0.6, label="Judge score (±std)")
+    judge_ma_line = plt.Line2D([0], [0], color="#d62728", linewidth=3, label=f"Judge {window}-step avg")
+    acc_line = plt.Line2D([0], [0], color="#1f77b4", linewidth=2.5, linestyle="--", label="Accuracy %")
     icl_marker = plt.Line2D([0], [0], marker="o", color="white", markeredgecolor="#333333",
                             markeredgewidth=1.5, markersize=10, linestyle="None",
                             label="ICL breakthrough (see table)")
-    ax1.legend(handles=[judge_patch, acc_patch, icl_marker], loc="upper right", fontsize=10)
+    ax1.legend(handles=[judge_line, judge_ma_line, acc_line, icl_marker], loc="upper right", fontsize=10)
 
     title = "Covert Communication: Judge Score & Accuracy"
     if run_name:
