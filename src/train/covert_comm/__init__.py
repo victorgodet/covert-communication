@@ -20,7 +20,7 @@ from src.train.covert_comm.trainer import (
     CovertCommTrainer,
     CovertCommTaskRunner,
 )
-from src.train.covert_comm.dataset import generate_dataset, get_primes_by_level, sieve_primes
+from src.train.covert_comm.dataset import generate_dataset, get_numbers_by_level, get_primes_by_level, sieve_primes
 from src.train.covert_comm.prompts import (
     make_decode_prompt,
     make_encode_prompt,
@@ -39,6 +39,7 @@ __all__ = [
     "CovertCommTrainer",
     "CovertCommTaskRunner",
     "generate_dataset",
+    "get_numbers_by_level",
     "get_primes_by_level",
     "sieve_primes",
     "make_decode_prompt",

@@ -1,12 +1,12 @@
 """Dataset generation for covert communication training.
 
-Generates JSONL files of prime numbers organized by digit count (levels)
+Generates JSONL files of numbers organized by digit count (levels)
 for curriculum training.
 
 Usage:
     from src.train.covert_comm.dataset import generate_dataset
-    generate_dataset(level=1)  # 2-digit primes (10-99)
-    generate_dataset(level=2)  # 3-digit primes (100-999)
+    generate_dataset(level=1)  # 2-digit numbers (10-99)
+    generate_dataset(level=2)  # 3-digit numbers (100-999)
 """
 
 from __future__ import annotations
@@ -31,18 +31,22 @@ def sieve_primes(lower: int, upper: int) -> list[int]:
     return [n for n in range(max(lower, 2), upper + 1) if is_prime[n]]
 
 
-def get_primes_by_level(level: int) -> list[int]:
-    """Get primes for a given digit-count level.
+def get_numbers_by_level(level: int) -> list[int]:
+    """Get all numbers for a given digit-count level.
 
-    Level 1 = 2-digit primes (10-99)
-    Level 2 = 3-digit primes (100-999)
-    Level 3 = 4-digit primes (1000-9999)
+    Level 1 = 2-digit numbers (10-99)
+    Level 2 = 3-digit numbers (100-999)
+    Level 3 = 4-digit numbers (1000-9999)
     etc.
     """
     num_digits = level + 1
     lower = 10 ** (num_digits - 1)
     upper = 10**num_digits - 1
-    return sieve_primes(lower, upper)
+    return list(range(lower, upper + 1))
+
+
+# Keep old name as alias for backward compatibility
+get_primes_by_level = get_numbers_by_level
 
 
 def generate_dataset(
@@ -50,7 +54,7 @@ def generate_dataset(
     output_dir: str = "results/data",
     enable_thinking: bool = False,
 ) -> str:
-    """Generate a JSONL dataset file for a given prime level.
+    """Generate a JSONL dataset file for a given level.
 
     Each row follows the ``DatasetExample`` schema expected by the training
     pipeline.
@@ -63,23 +67,23 @@ def generate_dataset(
     Returns:
         Path to the generated JSONL file.
     """
-    primes = get_primes_by_level(level)
+    numbers = get_numbers_by_level(level)
     num_digits = level + 1
 
     examples = []
-    for idx, prime in enumerate(primes):
+    for idx, number in enumerate(numbers):
         examples.append(
             {
                 "id": idx,
                 "dataset": "covert_comm",
                 "evaluator": "covert_comm",
-                "question": f"Encode the prime number {prime}",
-                "gt_answer": str(prime),
-                "answer": str(prime),
-                "prompt": make_encode_prompt(prime, enable_thinking=enable_thinking),
+                "question": f"Encode the number {number}",
+                "gt_answer": str(number),
+                "answer": str(number),
+                "prompt": make_encode_prompt(number, enable_thinking=enable_thinking),
                 "hint": None,
                 "prompt_metadata": {
-                    "target_number": prime,
+                    "target_number": number,
                     "num_digits": num_digits,
                 },
             }
@@ -91,5 +95,5 @@ def generate_dataset(
         for ex in examples:
             f.write(json.dumps(ex) + "\n")
 
-    print(f"Wrote {len(examples)} examples ({num_digits}-digit primes) to {output_path}")
+    print(f"Wrote {len(examples)} examples ({num_digits}-digit numbers) to {output_path}")
     return output_path
