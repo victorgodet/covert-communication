@@ -9,7 +9,9 @@ Example:
 
 import json
 import os
+import struct
 import sys
+import zlib
 
 import matplotlib
 matplotlib.use("Agg")
@@ -210,13 +212,36 @@ def plot_experiment(data, output_path, run_name=""):
                 format="png", transparent=False)
     plt.close()
 
-    # Convert RGBA -> RGB for Google Docs compatibility
-    from PIL import Image
+    # Convert RGBA -> sRGB PNG for Google Docs compatibility
+    from PIL import Image, PngImagePlugin
+
     img = Image.open(output_path)
     if img.mode == "RGBA":
         rgb = Image.new("RGB", img.size, (255, 255, 255))
         rgb.paste(img, mask=img.split()[3])
-        rgb.save(output_path, "PNG")
+    else:
+        rgb = img
+
+    # Save with sRGB intent and standard gamma via pnginfo
+    pnginfo = PngImagePlugin.PngInfo()
+    rgb.save(output_path, "PNG")
+
+    # Inject sRGB and gAMA chunks for correct color in Google Docs
+    with open(output_path, "rb") as f:
+        raw = f.read()
+    # sRGB chunk (rendering intent 0 = perceptual)
+    srgb_data = b'\x00'
+    srgb_crc = struct.pack('>I', zlib.crc32(b'sRGB' + srgb_data) & 0xffffffff)
+    srgb_chunk = struct.pack('>I', 1) + b'sRGB' + srgb_data + srgb_crc
+    # gAMA chunk (gamma = 45455 = 1/2.2)
+    gama_data = struct.pack('>I', 45455)
+    gama_crc = struct.pack('>I', zlib.crc32(b'gAMA' + gama_data) & 0xffffffff)
+    gama_chunk = struct.pack('>I', 4) + b'gAMA' + gama_data + gama_crc
+    # Insert after IHDR (8 byte sig + 25 byte IHDR chunk)
+    ihdr_end = 8 + 4 + 4 + 13 + 4  # sig + length + type + data + crc
+    patched = raw[:ihdr_end] + srgb_chunk + gama_chunk + raw[ihdr_end:]
+    with open(output_path, "wb") as f:
+        f.write(patched)
 
     print(f"Saved plot to {output_path}")
 
