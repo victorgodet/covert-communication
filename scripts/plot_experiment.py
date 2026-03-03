@@ -140,23 +140,23 @@ def plot_experiment(data, output_path, run_name=""):
     j_lo = min(j_lo, 4)  # always show at least down to 4
     j_hi = max(j_hi, 10)  # always show up to 10
 
-    # Colors — pure black and dark teal, Google Docs safe
-    c_judge = "#000000"
-    c_dots = "#666666"
-    c_acc = "#007070"
+    # Colors
+    c_judge = "#d62728"
+    c_range = "#cccccc"
+    c_acc = "#1f77b4"
 
     # Judge score (left axis)
     ax1.set_xlabel("Step", fontsize=13)
     ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color=c_judge)
 
-    # Individual judge scores as transparent dots
-    if data["judge_scores"]:
-        sc_steps, sc_vals = zip(*data["judge_scores"])
-        jittered_vals = np.array(sc_vals) + np.random.default_rng(42).uniform(-0.25, 0.25, len(sc_vals))
-        ax1.scatter(sc_steps, jittered_vals, color=c_dots, alpha=0.08, s=12, zorder=2, edgecolors="none")
+    # Per-step range bars (min to max, no transparency)
+    for i, step in enumerate(steps):
+        step_scores = [s for st, s in data["judge_scores"] if st == step]
+        if step_scores:
+            ax1.vlines(step, min(step_scores), max(step_scores), colors=c_range, linewidth=2, zorder=1)
 
     # Per-step mean (thin line)
-    ax1.plot(steps, judge_mean, color=c_judge, linewidth=1.0, alpha=0.35, zorder=3)
+    ax1.plot(steps, judge_mean, color=c_judge, linewidth=1.0, zorder=3)
 
     # Moving average of judge score
     window = min(5, len(judge_mean))
@@ -172,7 +172,7 @@ def plot_experiment(data, output_path, run_name=""):
     # Accuracy (right axis)
     ax2 = ax1.twinx()
     ax2.set_ylabel("Accuracy %", fontsize=13, color=c_acc)
-    ax2.plot(steps, accuracy, color=c_acc, linewidth=2.5, linestyle="--", label="Accuracy", zorder=3)
+    ax2.plot(steps, accuracy, color=c_acc, linewidth=2, linestyle="--", label="Accuracy", zorder=3)
     ax2.set_ylim(0, 105)
     ax2.tick_params(axis="y", labelcolor=c_acc)
 
@@ -193,14 +193,13 @@ def plot_experiment(data, output_path, run_name=""):
                  color="#333333", ha="center", va="center", zorder=6)
 
     # Legend
-    judge_dots = plt.Line2D([0], [0], marker="o", color=c_dots, alpha=0.4, markersize=5,
-                            linestyle="None", label="Individual judge scores")
+    range_line = plt.Line2D([0], [0], color=c_range, linewidth=4, label="Judge score range (min-max)")
     judge_ma_line = plt.Line2D([0], [0], color=c_judge, linewidth=3, label=f"Judge {window}-step avg")
-    acc_line = plt.Line2D([0], [0], color=c_acc, linewidth=2.5, linestyle="--", label="Accuracy %")
+    acc_line = plt.Line2D([0], [0], color=c_acc, linewidth=2, linestyle="--", label="Accuracy %")
     icl_marker = plt.Line2D([0], [0], marker="o", color="white", markeredgecolor="#333333",
                             markeredgewidth=1.5, markersize=10, linestyle="None",
                             label="ICL breakthrough (see table)")
-    ax1.legend(handles=[judge_dots, judge_ma_line, acc_line, icl_marker], loc="upper right", fontsize=10)
+    ax1.legend(handles=[range_line, judge_ma_line, acc_line, icl_marker], loc="upper right", fontsize=10)
 
     title = "Covert Communication: Judge Score & Accuracy"
     if run_name:
