@@ -140,19 +140,23 @@ def plot_experiment(data, output_path, run_name=""):
     j_lo = min(j_lo, 4)  # always show at least down to 4
     j_hi = max(j_hi, 10)  # always show up to 10
 
+    # Colors — pure black and dark teal, Google Docs safe
+    c_judge = "#000000"
+    c_dots = "#666666"
+    c_acc = "#007070"
+
     # Judge score (left axis)
     ax1.set_xlabel("Step", fontsize=13)
-    ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color="#d62728")
+    ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color=c_judge)
 
     # Individual judge scores as transparent dots
     if data["judge_scores"]:
         sc_steps, sc_vals = zip(*data["judge_scores"])
-        # Add jitter to avoid overlapping dots on integer scores
         jittered_vals = np.array(sc_vals) + np.random.default_rng(42).uniform(-0.25, 0.25, len(sc_vals))
-        ax1.scatter(sc_steps, jittered_vals, color="#d62728", alpha=0.06, s=12, zorder=2, edgecolors="none")
+        ax1.scatter(sc_steps, jittered_vals, color=c_dots, alpha=0.08, s=12, zorder=2, edgecolors="none")
 
     # Per-step mean (thin line)
-    ax1.plot(steps, judge_mean, color="#d62728", linewidth=1.2, alpha=0.5, zorder=3)
+    ax1.plot(steps, judge_mean, color=c_judge, linewidth=1.0, alpha=0.35, zorder=3)
 
     # Moving average of judge score
     window = min(5, len(judge_mean))
@@ -160,43 +164,39 @@ def plot_experiment(data, output_path, run_name=""):
         kernel = np.ones(window) / window
         judge_ma = np.convolve(judge_mean, kernel, mode="valid")
         ma_steps = steps[window - 1:]
-        ax1.plot(ma_steps, judge_ma, color="#d62728", linewidth=3, zorder=4)
+        ax1.plot(ma_steps, judge_ma, color=c_judge, linewidth=3, zorder=4)
     ax1.set_ylim(j_lo, j_hi + 0.5)
     ax1.set_yticks(range(j_lo, j_hi + 1))
-    ax1.tick_params(axis="y", labelcolor="#d62728")
+    ax1.tick_params(axis="y", labelcolor=c_judge)
 
     # Accuracy (right axis)
     ax2 = ax1.twinx()
-    ax2.set_ylabel("Accuracy %", fontsize=13, color="#1f77b4")
-    ax2.plot(steps, accuracy, color="#1f77b4", linewidth=2.5, linestyle="--", label="Accuracy", zorder=3)
+    ax2.set_ylabel("Accuracy %", fontsize=13, color=c_acc)
+    ax2.plot(steps, accuracy, color=c_acc, linewidth=2.5, linestyle="--", label="Accuracy", zorder=3)
     ax2.set_ylim(0, 105)
-    ax2.tick_params(axis="y", labelcolor="#1f77b4")
+    ax2.tick_params(axis="y", labelcolor=c_acc)
 
     # ICL event markers — numbered circles on the judge line
-    icl_steps_set = {e[0] for e in data["icl_events"]}
     for i, (step, target, score, msg) in enumerate(data["icl_events"]):
         num = i + 1
-        # Find the judge mean at this step
         step_idx = list(steps).index(step) if step in steps else None
         if step_idx is not None:
             y_val = judge_mean[step_idx]
         else:
             y_val = (j_lo + j_hi) / 2
 
-        # Vertical line
         ax1.axvline(x=step, color="#888888", alpha=0.25, linestyle=":", linewidth=1, zorder=1)
 
-        # Numbered marker
         ax1.plot(step, y_val, 'o', color="white", markersize=18, zorder=5,
                  markeredgecolor="#333333", markeredgewidth=1.5)
         ax1.text(step, y_val, str(num), fontsize=9, fontweight="bold",
                  color="#333333", ha="center", va="center", zorder=6)
 
     # Legend
-    judge_dots = plt.Line2D([0], [0], marker="o", color="#d62728", alpha=0.3, markersize=5,
+    judge_dots = plt.Line2D([0], [0], marker="o", color=c_dots, alpha=0.4, markersize=5,
                             linestyle="None", label="Individual judge scores")
-    judge_ma_line = plt.Line2D([0], [0], color="#d62728", linewidth=3, label=f"Judge {window}-step avg")
-    acc_line = plt.Line2D([0], [0], color="#1f77b4", linewidth=2.5, linestyle="--", label="Accuracy %")
+    judge_ma_line = plt.Line2D([0], [0], color=c_judge, linewidth=3, label=f"Judge {window}-step avg")
+    acc_line = plt.Line2D([0], [0], color=c_acc, linewidth=2.5, linestyle="--", label="Accuracy %")
     icl_marker = plt.Line2D([0], [0], marker="o", color="white", markeredgecolor="#333333",
                             markeredgewidth=1.5, markersize=10, linestyle="None",
                             label="ICL breakthrough (see table)")
