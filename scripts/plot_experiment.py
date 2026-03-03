@@ -134,26 +134,17 @@ def plot_experiment(data, output_path, run_name=""):
     judge_std = np.array(data["judge_std"])
     accuracy = np.array(data["accuracy"])
 
-    # Center judge axis around the data
-    j_lo = max(1, int(np.floor(min(judge_mean - judge_std))) - 1)
-    j_hi = min(10, int(np.ceil(max(judge_mean + judge_std))) + 1)
-    j_lo = min(j_lo, 4)  # always show at least down to 4
-    j_hi = max(j_hi, 10)  # always show up to 10
+    # Center judge axis around the mean data with some padding
+    j_lo = max(1, int(np.floor(min(judge_mean))) - 1)
+    j_hi = min(10, int(np.ceil(max(judge_mean))) + 1)
 
     # Colors
     c_judge = "#d62728"
-    c_range = "#cccccc"
     c_acc = "#1f77b4"
 
     # Judge score (left axis)
     ax1.set_xlabel("Step", fontsize=13)
     ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color=c_judge)
-
-    # Per-step range bars (min to max, no transparency)
-    for i, step in enumerate(steps):
-        step_scores = [s for st, s in data["judge_scores"] if st == step]
-        if step_scores:
-            ax1.vlines(step, min(step_scores), max(step_scores), colors=c_range, linewidth=2, zorder=1)
 
     # Per-step mean (thin line)
     ax1.plot(steps, judge_mean, color=c_judge, linewidth=1.0, zorder=3)
@@ -193,13 +184,13 @@ def plot_experiment(data, output_path, run_name=""):
                  color="#333333", ha="center", va="center", zorder=6)
 
     # Legend
-    range_line = plt.Line2D([0], [0], color=c_range, linewidth=4, label="Judge score range (min-max)")
+    judge_line = plt.Line2D([0], [0], color=c_judge, linewidth=1, label="Judge score (per step)")
     judge_ma_line = plt.Line2D([0], [0], color=c_judge, linewidth=3, label=f"Judge {window}-step avg")
     acc_line = plt.Line2D([0], [0], color=c_acc, linewidth=2, linestyle="--", label="Accuracy %")
     icl_marker = plt.Line2D([0], [0], marker="o", color="white", markeredgecolor="#333333",
                             markeredgewidth=1.5, markersize=10, linestyle="None",
                             label="ICL breakthrough (see table)")
-    ax1.legend(handles=[range_line, judge_ma_line, acc_line, icl_marker], loc="upper right", fontsize=10)
+    ax1.legend(handles=[judge_line, judge_ma_line, acc_line, icl_marker], loc="upper right", fontsize=10)
 
     title = "Covert Communication: Judge Score & Accuracy"
     if run_name:
