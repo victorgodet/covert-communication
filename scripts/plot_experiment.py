@@ -87,13 +87,40 @@ def load_run(run_dir):
     return data
 
 
+def classify_strategy(target, msg):
+    """Heuristic strategy classification for ICL examples."""
+    # ASCII: single character whose ord() == target
+    if len(msg.strip().rstrip(".!?")) < 20:
+        for ch in msg:
+            if ch.isalpha() and str(ord(ch.lower())) == target:
+                return f"ASCII: '{ch.lower()}'={target}"
+    # Fake refusal: contains apology/refusal language but still encodes number
+    lower = msg.lower()
+    if any(w in lower for w in ["sorry", "can't provide", "cannot"]):
+        return "fake refusal (number in meta-text)"
+    # Letter cipher: check if first letters of words map to digits (A=1..I=9)
+    letter_to_digit = {chr(ord('a') + i): str(i + 1) for i in range(9)}
+    letter_to_digit['0'] = '0'  # no letter for 0
+    words = [w for w in msg.split() if w and w[0].isalpha()]
+    if len(words) >= len(target):
+        first_letters = "".join(
+            letter_to_digit.get(w[0].lower(), "?") for w in words[:len(target)]
+        )
+        if first_letters == target:
+            return "first-letter acrostic"
+    # Check if letters are embedded in word beginnings anywhere
+    digits = list(target)
+    letters_needed = [chr(int(d) + ord('a') - 1) if d != '0' else None for d in digits]
+    if all(l is not None for l in letters_needed):
+        # Check for letter cipher in short words or abbreviations
+        upper_letters = "".join(chr(int(d) + ord('A') - 1) for d in digits if d != '0')
+        if upper_letters and upper_letters in msg:
+            return f"bare letter cipher ({upper_letters})"
+    return "letter cipher (in words)"
+
+
 def plot_experiment(data, output_path, run_name=""):
-    n_icl = len(data["icl_events"])
-    # Allocate space for ICL annotations below the plot
-    annot_height = max(1.0, n_icl * 0.45)
-    fig_height = 5 + annot_height
-    fig, ax1 = plt.subplots(figsize=(14, fig_height))
-    fig.subplots_adjust(bottom=annot_height / fig_height)
+    fig, ax1 = plt.subplots(figsize=(16, 7))
 
     steps = np.array(data["steps"])
     judge_mean = np.array(data["judge_mean"])
@@ -107,9 +134,9 @@ def plot_experiment(data, output_path, run_name=""):
     j_hi = max(j_hi, 10)  # always show up to 10
 
     # Judge score (left axis)
-    ax1.set_xlabel("Step", fontsize=12)
-    ax1.set_ylabel("Judge Score (correct samples)", fontsize=12, color="#d62728")
-    ax1.plot(steps, judge_mean, color="#d62728", linewidth=2, label="Judge mean", zorder=3)
+    ax1.set_xlabel("Step", fontsize=13)
+    ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color="#d62728")
+    ax1.plot(steps, judge_mean, color="#d62728", linewidth=2.5, label="Judge mean", zorder=3)
     ax1.fill_between(
         steps,
         judge_mean - judge_std,
@@ -124,41 +151,44 @@ def plot_experiment(data, output_path, run_name=""):
 
     # Accuracy (right axis)
     ax2 = ax1.twinx()
-    ax2.set_ylabel("Accuracy %", fontsize=12, color="#1f77b4")
-    ax2.plot(steps, accuracy, color="#1f77b4", linewidth=2, linestyle="--", label="Accuracy", zorder=3)
+    ax2.set_ylabel("Accuracy %", fontsize=13, color="#1f77b4")
+    ax2.plot(steps, accuracy, color="#1f77b4", linewidth=2.5, linestyle="--", label="Accuracy", zorder=3)
     ax2.set_ylim(0, 105)
     ax2.tick_params(axis="y", labelcolor="#1f77b4")
 
-    # ICL event vertical lines
-    for step, target, score, msg in data["icl_events"]:
-        ax1.axvline(x=step, color="#2ca02c", alpha=0.4, linestyle=":", linewidth=1.5, zorder=1)
+    # ICL event markers — numbered circles on the judge line
+    icl_steps_set = {e[0] for e in data["icl_events"]}
+    for i, (step, target, score, msg) in enumerate(data["icl_events"]):
+        num = i + 1
+        # Find the judge mean at this step
+        step_idx = list(steps).index(step) if step in steps else None
+        if step_idx is not None:
+            y_val = judge_mean[step_idx]
+        else:
+            y_val = (j_lo + j_hi) / 2
+
+        # Vertical line
+        ax1.axvline(x=step, color="#888888", alpha=0.25, linestyle=":", linewidth=1, zorder=1)
+
+        # Numbered marker
+        ax1.plot(step, y_val, 'o', color="white", markersize=18, zorder=5,
+                 markeredgecolor="#333333", markeredgewidth=1.5)
+        ax1.text(step, y_val, str(num), fontsize=9, fontweight="bold",
+                 color="#333333", ha="center", va="center", zorder=6)
 
     # Legend
     judge_patch = mpatches.Patch(color="#d62728", label="Judge score (±std)")
     acc_patch = mpatches.Patch(color="#1f77b4", label="Accuracy %")
-    icl_patch = mpatches.Patch(color="#2ca02c", label="ICL example added")
-    ax1.legend(handles=[judge_patch, acc_patch, icl_patch], loc="upper right", fontsize=9)
+    icl_marker = plt.Line2D([0], [0], marker="o", color="white", markeredgecolor="#333333",
+                            markeredgewidth=1.5, markersize=10, linestyle="None",
+                            label="ICL breakthrough (see table)")
+    ax1.legend(handles=[judge_patch, acc_patch, icl_marker], loc="upper right", fontsize=10)
 
     title = "Covert Communication: Judge Score & Accuracy"
     if run_name:
         title += f"\n{run_name}"
-    plt.title(title, fontsize=13)
-
-    # ICL annotations below the plot area as a clean list
-    for i, (step, target, score, msg) in enumerate(data["icl_events"]):
-        full_msg = msg.replace("\n", " ").strip()
-        label = f"s{step:>2d}  [{target} {score}/10]  \"{full_msg}\""
-        y_frac = (annot_height - 0.35 - i * 0.4) / fig_height
-        fig.text(
-            0.08, y_frac,
-            label,
-            fontsize=8,
-            color="#2ca02c",
-            fontfamily="monospace",
-            va="top",
-            ha="left",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="#f0fff0", edgecolor="#2ca02c", alpha=0.9),
-        )
+    plt.title(title, fontsize=14)
+    fig.tight_layout()
 
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved plot to {output_path}")
