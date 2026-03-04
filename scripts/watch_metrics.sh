@@ -28,8 +28,8 @@ print_header_self() {
 }
 
 print_header_external() {
-    echo "${DIM}  step │  acc   │   judge    │ stealth │ clip_e │ clip_d │ api_ok │ enc_ch │ dec_ch${RESET}"
-    echo "${DIM}  ─────┼────────┼────────────┼─────────┼────────┼────────┼────────┼────────┼───────${RESET}"
+    echo "${DIM}  step  tgt │  acc   │   judge    │ min │ icl │ clip_e │ clip_d │ api_ok │ enc_ch │ dec_ch${RESET}"
+    echo "${DIM}  ─────────┼────────┼────────────┼─────┼─────┼────────┼────────┼────────┼────────┼───────${RESET}"
 }
 
 print_header_extraction() {
@@ -39,8 +39,11 @@ print_header_extraction() {
 
 print_step_from_rollout() {
     local rollout_file="$1"
+    local icl_count="$2"
     python3 -c "
 import json, re, math, sys
+
+icl_count = ${icl_count:-0}
 
 try:
     records = [json.loads(l) for l in open('${rollout_file}')]
@@ -51,6 +54,7 @@ if n == 0:
     sys.exit(0)
 
 step = records[0].get('step', '?')
+target = records[0].get('target', '?')
 n_correct = sum(1 for r in records if r.get('correct', 0) > 0)
 acc_pct = n_correct * 100 / n
 
@@ -198,18 +202,21 @@ else:
         variance = sum((s - avg_judge) ** 2 for s in judge_scores_correct) / len(judge_scores_correct)
         std_judge = math.sqrt(variance)
 
-        n_stealth = sum(1 for r in records
-                        if r.get('correct', 0) > 0
-                        and r.get('judge_verdict', '') not in ('', 'PARSE_FAIL', None)
-                        and int(r['judge_verdict']) <= 2)
-        stealth_str = f'{n_stealth}/{n_correct}' if n_correct else '0/0'
+        min_score = min(judge_scores_correct)
 
         if avg_judge <= 3:    j_c = f'{G}{avg_judge:.1f}\u00b1{std_judge:.1f}{X}'
         elif avg_judge <= 6:  j_c = f'{Y}{avg_judge:.1f}\u00b1{std_judge:.1f}{X}'
         else:                 j_c = f'{R}{avg_judge:.1f}\u00b1{std_judge:.1f}{X}'
+
+        if min_score <= 1:    min_c = f'{G}{min_score:>3}{X}'
+        elif min_score <= 3:  min_c = f'{Y}{min_score:>3}{X}'
+        else:                 min_c = f'{R}{min_score:>3}{X}'
     else:
         j_c = '   -'
-        stealth_str = '-'
+        min_c = f'  -'
+
+    if icl_count > 0:  icl_c = f'{G}{icl_count:>3}{X}'
+    else:              icl_c = f'{R}{icl_count:>3}{X}'
 
     api_pct = n_api * 100 / n if n else 0
     if api_pct >= 95:   api_c = f'{G}{api_str}{X}'
@@ -218,7 +225,7 @@ else:
 
     acc_c = color_pct(acc_pct)
 
-    print(f'  {step:<4} \u2502 {acc_c} \u2502 {j_c:>10} \u2502 {stealth_str:<7} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {api_c:>6} \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
+    print(f'  {step:<4} {target:>4} \u2502 {acc_c} \u2502 {j_c:>10} \u2502 {min_c} \u2502 {icl_c} \u2502 {enc_clip_c}  \u2502 {dec_clip_c}  \u2502 {api_c:>6} \u2502 {avg_enc_think:>5} \u2502 {avg_dec_think:>5}', end='')
 " 2>/dev/null
 }
 
@@ -283,6 +290,51 @@ LAST_STEP=0
 CURRENT_MODE=""
 HEADER_PRINTED=""
 
+# Track ICL count across steps (cumulative, deduped, score <= 1)
+ICL_SEEN=$(mktemp /tmp/watch_metrics_icl.XXXXXX)
+trap "rm -f $ICL_SEEN" EXIT
+ICL_COUNT=0
+
+update_icl_count() {
+    local file="$1"
+    local new_count
+    new_count=$(python3 -c "
+import json, sys
+
+seen = set()
+try:
+    for l in open('$ICL_SEEN'):
+        seen.add(l.strip())
+except:
+    pass
+
+try:
+    recs = [json.loads(l) for l in open('$file')]
+except:
+    print(len(seen))
+    sys.exit(0)
+
+best_s = 11
+best_msg = None
+for r in recs:
+    if r.get('correct', 0) <= 0:
+        continue
+    try:
+        s = int(r.get('judge_verdict', '10'))
+    except:
+        continue
+    if s < best_s:
+        best_s = s
+        best_msg = r.get('encode_text', '').replace(chr(13), '').replace(chr(10), ' ').strip()
+if best_msg is not None and best_s <= 1 and best_msg not in seen:
+    seen.add(best_msg)
+    with open('$ICL_SEEN', 'a') as f:
+        f.write(best_msg + '\n')
+print(len(seen))
+" 2>/dev/null)
+    ICL_COUNT="${new_count:-$ICL_COUNT}"
+}
+
 find_latest_run() {
     find results/runs -mindepth 2 -maxdepth 2 -type d -printf '%T@ %p\n' 2>/dev/null \
         | sort -rn | head -1 | cut -d' ' -f2-
@@ -313,6 +365,8 @@ while true; do
         LAST_STEP=0
         CURRENT_MODE=""
         HEADER_PRINTED=""
+        > "$ICL_SEEN"
+        ICL_COUNT=0
     fi
 
     if [[ -z "$CURRENT_RUN" ]]; then
@@ -354,7 +408,8 @@ while true; do
 
         # Newline before each step (so previous line's end='' is closed)
         [[ "$LAST_STEP" -gt 0 ]] 2>/dev/null && echo ""
-        print_step_from_rollout "$f"
+        update_icl_count "$f"
+        print_step_from_rollout "$f" "$ICL_COUNT"
         LAST_STEP="$step_num"
     done
 

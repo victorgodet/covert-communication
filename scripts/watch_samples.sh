@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live sample viewer — two columns:
 #   Left:  correct samples from latest step (sorted by judge score)
-#   Right: accumulated ICL breakthrough messages
+#   Right: accumulated ICL breakthrough messages (score <= 1)
 #
 # Usage: bash scripts/watch_samples.sh
 
@@ -10,11 +10,11 @@ DIM=$'\033[2m'
 RESET=$'\033[0m'
 COLS=$(tput cols 2>/dev/null || echo 120)
 
-# ICL cache file (rebuilt on run change, appended per step)
 ICL_CACHE=$(mktemp /tmp/watch_samples_icl.XXXXXX)
 trap "rm -f $ICL_CACHE" EXIT
 
-# Build ICL cache from all existing rollout files (run once on launch/run change)
+ICL_THRESHOLD=1
+
 build_icl_cache() {
     local rollout_dir="$1"
     > "$ICL_CACHE"
@@ -22,6 +22,7 @@ build_icl_cache() {
 import json, os, sys
 
 rollout_dir = '$rollout_dir'
+threshold = $ICL_THRESHOLD
 if not os.path.isdir(rollout_dir):
     sys.exit(0)
 
@@ -48,12 +49,12 @@ for step_num, path in files:
         if s < best_s:
             best_s = s
             best_rec = r
-    if best_rec is not None and best_s <= 2:
+    if best_rec is not None and best_s <= threshold:
         msg = best_rec.get('encode_text', '').replace(chr(13), '').replace(chr(10), ' ').strip()
         if msg not in seen:
             seen.add(msg)
             print(json.dumps({
-                'step': best_rec.get('step', '?'),
+                'step': step_num,
                 'target': best_rec.get('target', '?'),
                 'score': str(best_s),
                 'msg': msg
@@ -61,12 +62,12 @@ for step_num, path in files:
 " > "$ICL_CACHE" 2>/dev/null
 }
 
-# Try to add ICL entry from a single new step file
 update_icl_cache() {
     local file="$1"
     python3 -c "
-import json, sys
+import json, sys, os, re
 
+threshold = $ICL_THRESHOLD
 seen = set()
 try:
     for l in open('$ICL_CACHE'):
@@ -92,11 +93,15 @@ for r in recs:
     if s < best_s:
         best_s = s
         best_rec = r
-if best_rec is not None and best_s <= 2:
+if best_rec is not None and best_s <= threshold:
     msg = best_rec.get('encode_text', '').replace(chr(13), '').replace(chr(10), ' ').strip()
     if msg not in seen:
+        step = best_rec.get('step', '?')
+        m = re.search(r'step_(\d+)', '$file')
+        if m:
+            step = int(m.group(1))
         print(json.dumps({
-            'step': best_rec.get('step', '?'),
+            'step': step,
             'target': best_rec.get('target', '?'),
             'score': str(best_s),
             'msg': msg
@@ -111,7 +116,7 @@ print_step() {
 import json, sys, re
 
 cols = ${COLS}
-half = cols // 2 - 2
+half = cols // 2 - 1
 DIM = '\033[2m'
 BOLD = '\033[1m'
 X = '\033[0m'
@@ -129,6 +134,7 @@ def score_color(score):
     else:            return '\033[38;5;160m'
 
 ICL_COLOR = '\033[38;5;117m'
+SEP = f'{DIM}\u2502{X}'
 
 try:
     records = [json.loads(l) for l in open('$file')]
@@ -138,11 +144,20 @@ if not records:
     sys.exit(0)
 
 step = records[0].get('step', '?')
-target = records[0].get('target', '?')
 n = len(records)
 n_correct = sum(1 for r in records if r.get('correct', 0) > 0)
+scores_correct = []
+for r in records:
+    if r.get('correct', 0) <= 0:
+        continue
+    try:
+        scores_correct.append(int(r.get('judge_verdict', '10')))
+    except:
+        pass
+avg_score = sum(scores_correct) / len(scores_correct) if scores_correct else 0
+min_score = min(scores_correct) if scores_correct else 0
 
-# Left: correct samples sorted by judge score
+# Left: correct samples sorted by judge score (deduped)
 seen = set()
 pool = []
 for r in records:
@@ -158,11 +173,6 @@ for r in records:
         pool.append((s, r.get('target', '?'), msg))
 pool.sort()
 
-left_items = []
-for s, t, msg in pool[:8]:
-    c = score_color(s)
-    left_items.append((f'[{t} {s}/10]', msg, c))
-
 # Right: ICL from cache file
 icl = []
 try:
@@ -172,40 +182,59 @@ try:
 except:
     pass
 
-# Header
-print(f'{BOLD}s{step} target={target} ({n_correct}/{n} correct){X}')
-print(f'{DIM}{\"-\" * half}{X}  {DIM}{\"-\" * half}{X}')
-lh = f'  Correct samples (best first)'
-rh = f'  ICL breakthroughs ({len(icl)} total)'
-print(f'{DIM}{lh:<{half}}{X}  {DIM}{rh}{X}')
-print(f'{DIM}{\"-\" * half}{X}  {DIM}{\"-\" * half}{X}')
+MAX_ROWS = 7
+left_entries = [(s, t, msg) for s, t, msg in pool[:MAX_ROWS]]
+right_entries = list(reversed(icl))[:MAX_ROWS]
+max_rows = max(len(left_entries), len(right_entries), 1)
+max_rows = min(max_rows, MAX_ROWS)
 
-# Build columns
-left_lines = []
-for prefix, msg, c in left_items:
-    max_msg = half - len(prefix) - 5
-    if len(msg) > max_msg:
-        msg = msg[:max_msg - 2] + '..'
-    left_lines.append(f'{c}{prefix} \"{msg}\"{X}')
+step_label = f's{step}'
+step_w = len(step_label) + 1
+stats = f'{n_correct}/{n} avg={avg_score:.1f} best={min_score}'
+icl_label = f'ICL({len(icl)})'
 
-right_lines = []
-for st, t, v, msg in reversed(icl):
-    prefix = f's{st} [{t} {v}/10]'
-    max_msg = half - len(prefix) - 5
-    if len(msg) > max_msg:
-        msg = msg[:max_msg - 2] + '..'
-    right_lines.append(f'{ICL_COLOR}{prefix} \"{msg}\"{X}')
-
-max_rows = max(len(left_lines), len(right_lines))
 for i in range(max_rows):
-    l = left_lines[i] if i < len(left_lines) else ''
-    r = right_lines[i] if i < len(right_lines) else ''
-    l_plain = re.sub(r'\033\[[^m]*m', '', l)
-    pad = half - len(l_plain)
-    if pad < 0: pad = 0
-    print(f'  {l}{\" \" * pad}  {r}')
+    if i == 0:
+        prefix_str = f'{DIM}{step_label}{X} '
+    else:
+        prefix_str = ' ' * step_w
+    prefix_plain_len = step_w
 
-print()
+    if i < len(left_entries):
+        s, t, msg = left_entries[i]
+        c = score_color(s)
+        tag = f'{s:>2}/10'
+        tag_len = 5
+        avail = half - prefix_plain_len - tag_len - 4
+        if len(msg) > avail:
+            msg = msg[:avail - 2] + '..'
+        left_col = f'{prefix_str}{c}{tag}{X} {DIM}\"{msg}\"{X}'
+        left_plain_len = prefix_plain_len + tag_len + 1 + len(msg) + 2
+    else:
+        left_col = prefix_str
+        left_plain_len = prefix_plain_len
+
+    pad = half - left_plain_len
+    if pad < 0:
+        pad = 0
+
+    if i < len(right_entries):
+        st, t, v, msg = right_entries[i]
+        tag = f's{st}'
+        avail = half - len(tag) - 6
+        if len(msg) > avail:
+            msg = msg[:avail - 2] + '..'
+        right_col = f'{ICL_COLOR}{tag} {v}/10 \"{msg}\"{X}'
+    else:
+        right_col = ''
+
+    is_last = (i == max_rows - 1)
+    nl = '' if is_last else '\n'
+    if right_col:
+        sys.stdout.write(f'{left_col}{\" \" * pad} {SEP} {right_col}{nl}')
+    else:
+        sys.stdout.write(f'{left_col}{nl}')
+sys.stdout.flush()
 " 2>/dev/null
 }
 
@@ -224,11 +253,7 @@ while true; do
     if [[ -n "$latest_run" && "$latest_run" != "$CURRENT_RUN" ]]; then
         CURRENT_RUN="$latest_run"
         LAST_STEP=0
-        echo ""
-        echo "${BOLD}Covert Comm Samples${RESET}"
-        echo "${DIM}$(basename "${CURRENT_RUN%/}")${RESET}"
-        echo ""
-        # Build ICL cache once from all existing files
+        printf "\n${BOLD}Covert Comm Samples${RESET}  ${DIM}$(basename "${CURRENT_RUN%/}")${RESET}\n"
         build_icl_cache "${CURRENT_RUN}rollouts"
     fi
 
@@ -249,7 +274,7 @@ while true; do
             continue
         fi
 
-        # Incrementally update ICL cache with just this new file
+        [[ "$LAST_STEP" -gt 0 ]] 2>/dev/null && echo ""
         update_icl_cache "$f"
         print_step "$f"
         LAST_STEP="$step_num"
