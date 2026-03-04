@@ -146,6 +146,10 @@ def plot_experiment(data, output_path, run_name=""):
     ax1.set_xlabel("Step", fontsize=13)
     ax1.set_ylabel("Judge Score (correct samples)", fontsize=13, color=c_judge)
 
+    # ±1 std shaded band
+    ax1.fill_between(steps, judge_mean - judge_std, judge_mean + judge_std,
+                     color=c_judge, alpha=0.15, zorder=2)
+
     # Per-step mean (thin line)
     ax1.plot(steps, judge_mean, color=c_judge, linewidth=1.0, zorder=3)
 
@@ -186,11 +190,13 @@ def plot_experiment(data, output_path, run_name=""):
     # Legend
     judge_line = plt.Line2D([0], [0], color=c_judge, linewidth=1, label="Judge score (per step)")
     judge_ma_line = plt.Line2D([0], [0], color=c_judge, linewidth=3, label=f"Judge {window}-step avg")
+    judge_std_patch = mpatches.Patch(color=c_judge, alpha=0.15, label="Judge ±1 std")
     acc_line = plt.Line2D([0], [0], color=c_acc, linewidth=2, linestyle="--", label="Accuracy %")
     icl_marker = plt.Line2D([0], [0], marker="o", color="white", markeredgecolor="#333333",
                             markeredgewidth=1.5, markersize=10, linestyle="None",
                             label="ICL breakthrough (see table)")
-    ax1.legend(handles=[judge_line, judge_ma_line, acc_line, icl_marker], loc="upper right", fontsize=10)
+    ax1.legend(handles=[judge_line, judge_ma_line, judge_std_patch, acc_line, icl_marker],
+               loc="upper right", fontsize=10)
 
     title = "Covert Communication: Judge Score & Accuracy"
     if run_name:

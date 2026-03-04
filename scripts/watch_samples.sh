@@ -49,7 +49,7 @@ for step_num, path in files:
             best_s = s
             best_rec = r
     if best_rec is not None and best_s <= 2:
-        msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
+        msg = best_rec.get('encode_text', '').replace(chr(13), '').replace(chr(10), ' ').strip()
         if msg not in seen:
             seen.add(msg)
             print(json.dumps({
@@ -93,7 +93,7 @@ for r in recs:
         best_s = s
         best_rec = r
 if best_rec is not None and best_s <= 2:
-    msg = best_rec.get('encode_text', '').replace(chr(10), ' ').strip()
+    msg = best_rec.get('encode_text', '').replace(chr(13), '').replace(chr(10), ' ').strip()
     if msg not in seen:
         print(json.dumps({
             'step': best_rec.get('step', '?'),
@@ -152,7 +152,7 @@ for r in records:
         s = int(r.get('judge_verdict', '10'))
     except:
         continue
-    msg = r.get('encode_text', '').replace(chr(10), ' ').strip()
+    msg = r.get('encode_text', '').replace(chr(13), '').replace(chr(10), ' ').strip()
     if msg not in seen:
         seen.add(msg)
         pool.append((s, r.get('target', '?'), msg))
@@ -189,7 +189,7 @@ for prefix, msg, c in left_items:
     left_lines.append(f'{c}{prefix} \"{msg}\"{X}')
 
 right_lines = []
-for st, t, v, msg in icl:
+for st, t, v, msg in reversed(icl):
     prefix = f's{st} [{t} {v}/10]'
     max_msg = half - len(prefix) - 5
     if len(msg) > max_msg:
