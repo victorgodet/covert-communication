@@ -85,7 +85,8 @@ def train(
         judge_model_id: OpenRouter model ID for the obfuscation judge.
         judge_mode: "external" for LLM judge via OpenRouter, "self" for self-play judge.
         judge_type: "scoring" for 1-10 detectability score (Exp 5/6),
-            "extraction" for extraction judge that tries to crack (Exp 7).
+            "extraction" for extraction judge that tries to crack (Exp 7),
+            "prediction" for judge that predicts whether decoder will recover the number.
         extraction_reward: Reward when extraction judge fails to crack (default 1.0).
         num_generations: Generations per prompt (halved from default —
             two generate calls per step).
